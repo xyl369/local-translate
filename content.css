@@ -1,0 +1,257 @@
+/* Bilingual immersive translation styles */
+
+.bt-translated-block {
+  display: block;
+  margin-top: 0.28em;
+  line-height: 1.55;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+}
+
+.bt-translated-block.bt-small {
+  margin-top: 0.1em;
+  font-size: 0.92em;
+  line-height: 1.35;
+  opacity: 0.92;
+}
+
+.bt-style-muted .bt-translated-block {
+  color: #5b6b7c;
+  opacity: 0.95;
+}
+
+.bt-style-underline .bt-translated-block {
+  color: #1f4e79;
+  border-bottom: 1px dashed rgba(37, 99, 235, 0.35);
+  padding-bottom: 0.1em;
+}
+
+.bt-style-box .bt-translated-block {
+  color: #1e293b;
+  background: rgba(37, 99, 235, 0.06);
+  border-left: 3px solid rgba(37, 99, 235, 0.55);
+  padding: 0.35em 0.55em;
+  border-radius: 0 6px 6px 0;
+  margin-top: 0.4em;
+}
+
+/* Inline elements: keep translation nearby without breaking layout too hard */
+span.bt-host > .bt-translated-block,
+a.bt-host > .bt-translated-block,
+strong.bt-host > .bt-translated-block,
+em.bt-host > .bt-translated-block,
+b.bt-host > .bt-translated-block,
+i.bt-host > .bt-translated-block,
+label.bt-host > .bt-translated-block {
+  display: inline;
+  margin-left: 0.35em;
+  margin-top: 0;
+  font-size: 0.95em;
+}
+
+.bt-translation-only .bt-original-hidden {
+  /* keep for accessibility but hide visually */
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+.bt-loading-dot::after {
+  content: " Translating…";
+  color: #64748b;
+  font-size: 0.85em;
+  animation: bt-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes bt-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Floating selection toast */
+#bt-selection-toast {
+  position: fixed;
+  z-index: 2147483646;
+  max-width: min(420px, 90vw);
+  background: #0f172a;
+  color: #f8fafc;
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.35);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  pointer-events: auto;
+}
+
+#bt-selection-toast .bt-toast-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+
+#bt-selection-toast .bt-toast-original {
+  color: #cbd5e1;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+#bt-selection-toast .bt-toast-translated {
+  color: #fff;
+  font-size: 15px;
+}
+
+#bt-selection-toast .bt-toast-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  border: 0;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* Progress bar */
+#bt-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 2147483647;
+  background: transparent;
+  pointer-events: none;
+}
+
+#bt-progress > i {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #2563eb, #06b6d4);
+  transition: width 0.2s ease;
+}
+
+/* YouTube bilingual subtitle — dual EN/ZH panels (up to 4 lines), draggable */
+#lt-yt-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2147483000;
+}
+
+#lt-yt-overlay .lt-yt-panel {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(920px, calc(100vw - 48px));
+  max-width: 92%;
+  pointer-events: auto;
+  text-align: center;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#lt-yt-overlay .lt-yt-panel.lt-yt-dragging {
+  cursor: grabbing;
+  opacity: 0.92;
+}
+
+#lt-yt-overlay .lt-yt-status {
+  display: none;
+}
+
+#lt-yt-overlay .lt-yt-text {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: 5px 16px 6px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Each panel = 1 EN line + 1 ZH line; two panels = up to 4 lines */
+#lt-yt-overlay .lt-yt-pair {
+  display: block;
+}
+
+#lt-yt-overlay .lt-yt-pair + .lt-yt-pair {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+#lt-yt-overlay .lt-yt-origin {
+  font: 11px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: rgba(226, 232, 240, 0.92);
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#lt-yt-overlay .lt-yt-trans {
+  font: 12.5px/1.35 "PingFang SC", "Hiragino Sans GB", "Segoe UI", sans-serif;
+  color: #fff;
+  font-weight: 500;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#lt-yt-overlay .lt-yt-pair-prev {
+  opacity: 0.58;
+}
+
+#lt-yt-overlay .lt-yt-pair-prev .lt-yt-trans {
+  font-weight: 400;
+}
+
+#lt-yt-overlay .lt-yt-pair-current {
+  opacity: 1;
+}
+
+#lt-yt-overlay .lt-yt-pair-current .lt-yt-trans {
+  font-size: 13px;
+}
+
+#lt-yt-overlay.lt-yt-trans-only .lt-yt-origin {
+  display: none;
+}
+
+#lt-yt-overlay.lt-yt-trans-only .lt-yt-trans {
+  white-space: nowrap;
+}
+
+/* Hide native CC during live sync to avoid double subtitles */
+html.lt-yt-hide-native-cc .ytp-caption-window-container,
+html.lt-yt-hide-native-cc .caption-window {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+
+/* Dark page soft override for muted style */
+@media (prefers-color-scheme: dark) {
+  .bt-style-muted .bt-translated-block {
+    color: #a8b8c8;
+  }
+}
