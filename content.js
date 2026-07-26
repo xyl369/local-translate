@@ -770,12 +770,34 @@
 
   // ─── Inject translation ───
 
+  // Elements whose translation should stay on the same line as the
+  // original text instead of stacking below it — this keeps buttons,
+  // badges, pills and table cells from growing taller than their siblings.
+  const COMPACT_HOST_TAGS = new Set([
+    "A", "BUTTON", "LABEL", "SPAN", "STRONG", "EM", "B", "I", "SMALL", "TH", "TD"
+  ]);
+  const COMPACT_HOST_CLASS_RE = /\b(Label|Badge|Counter|State|Tag|Pill|chip|tooltipped)\b/i;
+
+  function isCompactHost(el) {
+    if (!el) return false;
+    if (COMPACT_HOST_TAGS.has(el.tagName)) return true;
+    if (typeof el.className === "string" && COMPACT_HOST_CLASS_RE.test(el.className)) return true;
+    try {
+      const disp = getComputedStyle(el).display;
+      if (disp === "inline" || disp === "inline-block" || disp === "inline-flex" || disp === "inline-grid") {
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
   function injectAfter(el, translatedText, originalText) {
     if (!el || !translatedText) return false;
     if (el.querySelector(":scope > .bt-translated-block")) return false;
 
     el.setAttribute(DONE, "1");
     el.classList.add("bt-host");
+    if (isCompactHost(el)) el.classList.add("bt-host-compact");
 
     if (settings?.displayMode === "translation-only") wrapOriginal(el);
 
@@ -785,13 +807,6 @@
     if (originalText && originalText.length <= 40) node.classList.add("bt-small");
     node.textContent = translatedText;
 
-    const inline = ["A", "BUTTON", "LABEL", "SPAN", "STRONG", "EM", "B", "I", "SMALL", "TH"].includes(
-      el.tagName
-    );
-    if (inline) {
-      node.style.display = "block";
-      node.style.marginTop = "0.12em";
-    }
     el.appendChild(node);
     return true;
   }
