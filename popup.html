@@ -11,84 +11,88 @@
       <div class="brand">
         <img src="icons/icon48.png" width="28" height="28" alt="" />
         <div>
-          <h1>Local Translate</h1>
-          <p class="subtitle">Viewport translate · auto-fill on scroll</p>
+          <h1 data-i18n="appName">Local Translate</h1>
+          <p class="subtitle" data-i18n="appSubtitle">Viewport translate · auto-fill on scroll</p>
         </div>
       </div>
-      <span id="status" class="status">Ready</span>
+      <div class="header-right">
+        <button id="uiLangToggle" class="lang-toggle" type="button" data-i18n="langToggle">中文</button>
+        <span id="status" class="status" data-i18n="ready">Ready</span>
+      </div>
     </header>
 
     <main>
-      <div id="engine" class="engine ok">Engine: Google Translate</div>
+      <div id="engine" class="engine ok" data-i18n="engineOk">Engine: Google Translate</div>
 
       <section class="actions">
-        <button id="btn-translate" class="btn primary">Translate page</button>
-        <button id="btn-restore" class="btn ghost">Restore original</button>
+        <button id="btn-translate" class="btn primary" data-i18n="translatePage">Translate page</button>
+        <button id="btn-restore" class="btn ghost" data-i18n="restoreOriginal">Restore original</button>
       </section>
 
       <section class="actions">
-        <button id="btn-yt-subs" class="btn primary">Dual subtitles</button>
-        <button id="btn-yt-stop" class="btn ghost">Turn off subtitles</button>
+        <button id="btn-yt-subs" class="btn primary" data-i18n="dualSubtitles">Dual subtitles</button>
+        <button id="btn-yt-stop" class="btn ghost" data-i18n="turnOffSubtitles">Turn off subtitles</button>
       </section>
 
       <label class="field">
-        <span>Target language</span>
+        <span data-i18n="targetLanguage">Target language</span>
         <select id="targetLang">
-          <option value="zh-CN">Simplified Chinese</option>
-          <option value="zh-TW">Traditional Chinese</option>
-          <option value="en">English</option>
-          <option value="ja">Japanese</option>
-          <option value="ko">Korean</option>
-          <option value="fr">French</option>
-          <option value="de">German</option>
-          <option value="es">Spanish</option>
-          <option value="ru">Russian</option>
-          <option value="pt">Portuguese</option>
-          <option value="vi">Vietnamese</option>
-          <option value="th">Thai</option>
+          <option value="zh-CN" data-i18n="lang_zhCN">Simplified Chinese</option>
+          <option value="zh-TW" data-i18n="lang_zhTW">Traditional Chinese</option>
+          <option value="en" data-i18n="lang_en">English</option>
+          <option value="ja" data-i18n="lang_ja">Japanese</option>
+          <option value="ko" data-i18n="lang_ko">Korean</option>
+          <option value="fr" data-i18n="lang_fr">French</option>
+          <option value="de" data-i18n="lang_de">German</option>
+          <option value="es" data-i18n="lang_es">Spanish</option>
+          <option value="ru" data-i18n="lang_ru">Russian</option>
+          <option value="pt" data-i18n="lang_pt">Portuguese</option>
+          <option value="vi" data-i18n="lang_vi">Vietnamese</option>
+          <option value="th" data-i18n="lang_th">Thai</option>
         </select>
       </label>
 
       <label class="field">
-        <span>Display mode</span>
+        <span data-i18n="displayMode">Display mode</span>
         <select id="displayMode">
-          <option value="bilingual">Bilingual (recommended)</option>
-          <option value="translation-only">Translation only</option>
+          <option value="bilingual" data-i18n="mode_bilingual">Bilingual (recommended)</option>
+          <option value="translation-only" data-i18n="mode_translationOnly">Translation only</option>
         </select>
       </label>
 
       <label class="field">
-        <span>Translation style</span>
+        <span data-i18n="translationStyle">Translation style</span>
         <select id="translationStyle">
-          <option value="muted">Muted follow</option>
-          <option value="underline">Underline</option>
-          <option value="box">Left accent bar</option>
+          <option value="muted" data-i18n="style_muted">Muted follow</option>
+          <option value="underline" data-i18n="style_underline">Underline</option>
+          <option value="box" data-i18n="style_box">Left accent bar</option>
         </select>
       </label>
 
       <label class="check">
         <input type="checkbox" id="autoTranslate" />
-        <span>Auto-translate on page load</span>
+        <span data-i18n="autoTranslate">Auto-translate on page load</span>
       </label>
 
       <label class="check">
         <input type="checkbox" id="blockSite" />
-        <span id="blockSiteLabel">Never translate this site</span>
+        <span id="blockSiteLabel" data-i18n="neverTranslateSite">Never translate this site</span>
       </label>
 
       <label class="check">
         <input type="checkbox" id="videoSubsAuto" checked />
-        <span>YouTube auto dual subtitles</span>
+        <span data-i18n="videoSubsAuto">YouTube auto dual subtitles</span>
       </label>
 
       <label class="check">
         <input type="checkbox" id="skipCode" checked />
-        <span>Skip code blocks</span>
+        <span data-i18n="skipCode">Skip code blocks</span>
       </label>
     </main>
 
-    <footer>Translate page = visible area; scroll for more · turn on CC for video subs</footer>
+    <footer data-i18n="footer">Translate page = visible area; scroll for more · turn on CC for video subs</footer>
 
+    <script src="popup-i18n.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

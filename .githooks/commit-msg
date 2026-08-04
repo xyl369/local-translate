@@ -1,0 +1,22 @@
+#!/bin/sh
+# Normalize commit messages before they are recorded.
+# Drops unsolicited Co-authored-by trailers that should not appear on GitHub.
+
+msg_file="$1"
+[ -n "$msg_file" ] && [ -f "$msg_file" ] || exit 0
+
+strip() {
+  if sed --version 2>/dev/null | grep -q GNU; then
+    sed -i "$@" "$msg_file"
+  else
+    sed -i '' "$@" "$msg_file"
+  fi
+}
+
+strip '/^Co-authored-by: Cursor <cursoragent@cursor.com>$/d'
+strip '/^Co-authored-by:.*cursoragent@/Id'
+strip '/^Co-authored-by:.*[Cc]ursor.*[Aa]gent/Id'
+
+perl -0777 -i -pe 's/\n+\z/\n/' "$msg_file" 2>/dev/null || true
+
+exit 0

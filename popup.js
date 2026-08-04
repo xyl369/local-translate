@@ -1,4 +1,5 @@
 const DEFAULTS = {
+  uiLang: "",
   targetLang: "zh-CN",
   displayMode: "bilingual",
   translationStyle: "muted",
@@ -20,11 +21,19 @@ const fields = [
 ];
 
 let currentHost = "";
+// Track the *meaning* of the current status/engine text (not the literal
+// string) so switching UI language re-renders it correctly instead of
+// leaving stale English/Chinese behind.
+let statusState = { key: "ready" };
+let engineState = { key: "engineOk", cls: "engine ok" };
 
 init();
 
 async function init() {
   const settings = await loadSettings();
+  uiLang = settings.uiLang || detectDefaultUiLang();
+  applyStaticI18n();
+
   $("targetLang").value = settings.targetLang;
   $("displayMode").value = settings.displayMode;
   $("translationStyle").value = settings.translationStyle;
@@ -35,12 +44,11 @@ async function init() {
   currentHost = await getActiveHostname();
   const blocked = normalizeBlocked(settings.blockedHosts);
   $("blockSite").checked = !!(currentHost && blocked.includes(currentHost));
-  $("blockSiteLabel").textContent = currentHost
-    ? `Never translate this site (${currentHost})`
-    : "Never translate this site";
+  renderBlockSiteLabel();
 
   fields.forEach((id) => $(id).addEventListener("change", saveFromUI));
   $("blockSite").addEventListener("change", onBlockSiteChange);
+  $("uiLangToggle").addEventListener("click", onUiLangToggle);
 
   $("btn-translate").addEventListener("click", onTranslateClick);
   $("btn-restore").addEventListener("click", () =>
@@ -49,18 +57,33 @@ async function init() {
   $("btn-yt-subs").addEventListener("click", onYtSubsClick);
   $("btn-yt-stop").addEventListener("click", async () => {
     await sendToActiveTab({ type: "YT_SUBS_STOP" }, { waitMs: 800 });
-    setStatus("Subtitles off");
-    $("engine").textContent = "Engine: Google Translate";
-    $("engine").className = "engine ok";
+    setStatus("subtitlesOff");
+    setEngine("engineOk", null, "engine ok");
   });
 
   if ($("blockSite").checked) {
-    setStatus("Blocked");
-    $("engine").textContent = "Never translate this site · uncheck to restore";
-    $("engine").className = "engine";
+    setStatus("blocked");
+    setEngine("engineNeverHint", null, "engine");
   }
 
   refreshStatus().catch(() => {});
+}
+
+function renderBlockSiteLabel() {
+  $("blockSiteLabel").textContent = currentHost
+    ? t("neverTranslateSiteHost", { host: currentHost })
+    : t("neverTranslateSite");
+}
+
+async function onUiLangToggle() {
+  uiLang = uiLang === "zh" ? "en" : "zh";
+  await chrome.storage.local.set({ uiLang });
+  applyStaticI18n();
+  renderBlockSiteLabel();
+  // Re-render the last status/engine message in the new language instead
+  // of leaving it in whatever language it was originally shown in.
+  setStatus(statusState.key, statusState.vars);
+  setEngine(engineState.key, engineState.vars, engineState.cls);
 }
 
 function normalizeBlocked(list) {
@@ -86,7 +109,7 @@ function getActiveHostname() {
 
 function loadSettings() {
   return new Promise((resolve) => {
-    chrome.storage.sync.get(DEFAULTS, (data) => resolve({ ...DEFAULTS, ...data }));
+    chrome.storage.local.get(DEFAULTS, (data) => resolve({ ...DEFAULTS, ...data }));
   });
 }
 
@@ -102,15 +125,15 @@ async function saveFromUI() {
     videoSubsMode: $("displayMode").value,
     blockedHosts: normalizeBlocked(prev.blockedHosts)
   };
-  await chrome.storage.sync.set(settings);
+  await chrome.storage.local.set(settings);
   sendToActiveTab({ type: "SETTINGS_UPDATED", settings }, { waitMs: 600 }).catch(() => {});
-  setStatus("Saved");
+  setStatus("saved");
 }
 
 async function onBlockSiteChange() {
   if (!currentHost) {
     $("blockSite").checked = false;
-    setStatus("Cannot identify site");
+    setStatus("cannotIdentifySite");
     return;
   }
 
@@ -120,7 +143,7 @@ async function onBlockSiteChange() {
 
   if (on) {
     if (!blocked.includes(currentHost)) blocked.push(currentHost);
-    await chrome.storage.sync.set({ blockedHosts: blocked });
+    await chrome.storage.local.set({ blockedHosts: blocked });
     // Restore page and stop subtitles immediately
     await sendToActiveTab({ type: "RESTORE_PAGE" }, { waitMs: 1200, inject: true });
     await sendToActiveTab({ type: "YT_SUBS_STOP" }, { waitMs: 600 });
@@ -128,56 +151,50 @@ async function onBlockSiteChange() {
       { type: "SETTINGS_UPDATED", settings: { ...(await loadSettings()), blockedHosts: blocked } },
       { waitMs: 600 }
     );
-    setStatus("Blocked");
-    $("engine").textContent = `${currentHost} blocked`;
-    $("engine").className = "engine";
+    setStatus("blocked");
+    setEngine("hostBlocked", { host: currentHost }, "engine");
   } else {
     blocked = blocked.filter((h) => h !== currentHost);
-    await chrome.storage.sync.set({ blockedHosts: blocked });
+    await chrome.storage.local.set({ blockedHosts: blocked });
     await sendToActiveTab(
       { type: "SETTINGS_UPDATED", settings: { ...(await loadSettings()), blockedHosts: blocked } },
       { waitMs: 600 }
     );
-    setStatus("Unblocked");
-    $("engine").textContent = "Engine: Google Translate";
-    $("engine").className = "engine ok";
+    setStatus("unblocked");
+    setEngine("engineOk", null, "engine ok");
   }
 }
 
 async function onTranslateClick() {
   try {
     if ($("blockSite").checked) {
-      setStatus("Blocked");
-      $("engine").textContent = "Uncheck Never translate this site first";
-      $("engine").className = "engine bad";
+      setStatus("blocked");
+      setEngine("uncheckBlockFirst", null, "engine bad");
       return;
     }
     $("btn-translate").disabled = true;
-    setStatus("Translating viewport…");
-    $("engine").textContent = "Visible area only; auto-fills on scroll";
-    $("engine").className = "engine";
+    setStatus("translatingViewport");
+    setEngine("engineViewportOnly", null, "engine");
 
     const res = await sendToActiveTab(
       { type: "TRANSLATE_PAGE" },
       { waitMs: 8000, inject: true }
     );
     if (!res) return;
-    if (res.ok === false) throw new Error(res.error || "Translation failed");
+    if (res.ok === false) throw new Error(res.error || t("translationFailedDefault"));
     if (res.blocked) {
-      setStatus("Blocked");
+      setStatus("blocked");
       $("blockSite").checked = true;
-      $("engine").textContent = "Never translate this site";
-      $("engine").className = "engine";
+      setEngine("neverTranslateSite", null, "engine");
       return;
     }
 
-    setStatus(res.count != null ? `Translated ${res.count} visible · scroll for more` : "Enabled");
-    $("engine").textContent = "Scroll-loaded content translates automatically";
-    $("engine").className = "engine ok";
+    if (res.count != null) setStatus("translatedCount", { count: res.count });
+    else setStatus("enabled");
+    setEngine("engineAutoScroll", null, "engine ok");
   } catch (err) {
-    setStatus("Failed");
-    $("engine").textContent = String(err?.message || err);
-    $("engine").className = "engine bad";
+    setStatus("failed");
+    setRawEngine(String(err?.message || err), "engine bad");
   } finally {
     $("btn-translate").disabled = false;
   }
@@ -186,13 +203,12 @@ async function onTranslateClick() {
 async function onYtSubsClick() {
   try {
     if ($("blockSite").checked) {
-      setStatus("Blocked");
-      $("engine").textContent = "Uncheck Never translate this site first";
-      $("engine").className = "engine bad";
+      setStatus("blocked");
+      setEngine("uncheckBlockFirst", null, "engine bad");
       return;
     }
     $("btn-yt-subs").disabled = true;
-    setStatus("Starting…");
+    setStatus("starting");
     const res = await sendToActiveTab(
       {
         type: "YT_SUBS_START",
@@ -201,14 +217,12 @@ async function onYtSubsClick() {
       },
       { waitMs: 1200, inject: true }
     );
-    if (res?.ok === false) throw new Error(res.error || "Failed to start");
-    setStatus("Live sync on");
-    $("engine").textContent = "Turn on CC; scroll comments with Translate page";
-    $("engine").className = "engine ok";
+    if (res?.ok === false) throw new Error(res.error || t("startFailedDefault"));
+    setStatus("liveSyncOn");
+    setEngine("engineTurnOnCC", null, "engine ok");
   } catch (err) {
-    setStatus("Failed");
-    $("engine").textContent = String(err?.message || err);
-    $("engine").className = "engine bad";
+    setStatus("failed");
+    setRawEngine(String(err?.message || err), "engine bad");
   } finally {
     $("btn-yt-subs").disabled = false;
   }
@@ -266,26 +280,26 @@ async function sendToActiveTab(message, opts = {}) {
       tab.url
     )
   ) {
-    setStatus("This page cannot be translated");
+    setStatus("cannotTranslatePage");
     return null;
   }
   try {
     if (opts.inject !== false) {
-      await withTimeout(ensureContentScript(tab.id, tab.url), 900, "Injection timeout");
+      await withTimeout(ensureContentScript(tab.id, tab.url), 900, t("injectionTimeout"));
     }
-    if (message.type === "RESTORE_PAGE") setStatus("Restored");
+    if (message.type === "RESTORE_PAGE") setStatus("restored");
     return await withTimeout(
       chrome.tabs.sendMessage(tab.id, message),
       waitMs,
-      "Page response timeout"
+      t("pageResponseTimeout")
     );
   } catch (err) {
     if (message.type === "YT_SUBS_START") {
       return { ok: true, ready: true, softTimeout: true };
     }
-    setStatus(String(err?.message || err));
-    $("engine").textContent = String(err?.message || err);
-    $("engine").className = "engine bad";
+    const msg = String(err?.message || err);
+    setRawStatus(msg);
+    setRawEngine(msg, "engine bad");
     return null;
   }
 }
@@ -302,16 +316,34 @@ async function refreshStatus() {
     );
     if (res?.blocked) {
       $("blockSite").checked = true;
-      setStatus("Blocked");
+      setStatus("blocked");
       return;
     }
-    if (res?.translating) setStatus("Translating…");
-    else if (res?.translated || res?.enabled) setStatus("Translated · scroll for more");
+    if (res?.translating) setStatus("translating");
+    else if (res?.translated || res?.enabled) setStatus("translatedScroll");
   } catch {
     /* ignore */
   }
 }
 
-function setStatus(text) {
+function setStatus(key, vars) {
+  statusState = { key, vars };
+  $("status").textContent = t(key, vars);
+}
+
+function setEngine(key, vars, cls) {
+  engineState = { key, vars, cls: cls || "engine" };
+  $("engine").textContent = t(key, vars);
+  $("engine").className = engineState.cls;
+}
+
+// For raw, non-localizable messages (e.g. unexpected browser/runtime errors)
+// that don't come from our own dictionary of known status keys.
+function setRawStatus(text) {
   $("status").textContent = text;
+}
+
+function setRawEngine(text, cls) {
+  $("engine").textContent = text;
+  $("engine").className = cls || "engine";
 }

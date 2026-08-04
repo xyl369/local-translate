@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Local Translate",
-  "version": "3.5.2",
-  "description": "Viewport translate + site block + YouTube dual subtitles",
+  "version": "3.6.0",
+  "description": "Auditable bilingual translate + YouTube dual subs. No analytics; settings stay on-device. Text goes to Google Translate only.",
   "permissions": ["storage", "activeTab", "scripting", "contextMenus"],
   "host_permissions": [
     "https://translate.googleapis.com/*",

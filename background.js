@@ -1,6 +1,6 @@
 /**
  * Translation service: Google Translate (public gtx API, higher quality than Chrome on-device)
- * v3.0 — batched requests + high concurrency + cache
+ * Settings use chrome.storage.local only — never sync to a Google account.
  */
 
 const DEFAULT_SETTINGS = {
@@ -14,6 +14,26 @@ const DEFAULT_SETTINGS = {
   videoSubsMode: "bilingual",
   blockedHosts: []
 };
+
+const MIGRATED_KEY = "__migratedFromSync";
+
+/** One-time: copy chrome.storage.sync → local, then clear sync (avoids Google account sync). */
+function migrateSyncToLocal() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get([MIGRATED_KEY], (local) => {
+      if (local[MIGRATED_KEY]) {
+        resolve();
+        return;
+      }
+      chrome.storage.sync.get(null, (syncData) => {
+        const payload = { ...DEFAULT_SETTINGS, ...(syncData || {}), [MIGRATED_KEY]: true };
+        chrome.storage.local.set(payload, () => {
+          chrome.storage.sync.clear(() => resolve());
+        });
+      });
+    });
+  });
+}
 
 // ─── Translation cache (in-memory LRU, max 2000 entries) ───
 const cache = new Map();
@@ -46,8 +66,10 @@ function cacheSet(text, lang, result) {
 // ─── Install & context menu ───
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.sync.get(DEFAULT_SETTINGS, (settings) => {
-    chrome.storage.sync.set({ ...DEFAULT_SETTINGS, ...settings });
+  migrateSyncToLocal().then(() => {
+    chrome.storage.local.get(DEFAULT_SETTINGS, (settings) => {
+      chrome.storage.local.set({ ...DEFAULT_SETTINGS, ...settings, [MIGRATED_KEY]: true });
+    });
   });
 
   chrome.contextMenus.removeAll(() => {
@@ -63,6 +85,9 @@ chrome.runtime.onInstalled.addListener(() => {
     });
   });
 });
+
+// Also migrate on service worker wake (covers upgrades that skip onInstalled).
+migrateSyncToLocal();
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!tab?.id) return;
@@ -157,11 +182,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 function getSettings() {
-  return new Promise((resolve) => {
-    chrome.storage.sync.get(DEFAULT_SETTINGS, (data) =>
-      resolve({ ...DEFAULT_SETTINGS, ...data })
-    );
-  });
+  return migrateSyncToLocal().then(
+    () =>
+      new Promise((resolve) => {
+        chrome.storage.local.get(DEFAULT_SETTINGS, (data) =>
+          resolve({ ...DEFAULT_SETTINGS, ...data })
+        );
+      })
+  );
 }
 
 // ─── Core: batched translation ───
