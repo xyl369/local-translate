@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.7.2] — 2026-08-05
+
+### Fix: YouTube Chinese missing
+
+- Remove over-aggressive cue remapping that dropped ZH onto the wrong line
+- Only accept translations that contain real CJK; restore page-level Google fallback if background messaging fails
+- Re-apply ZH to previous/current lines reliably after advance
+
 ## [3.7.1] — 2026-08-05
 
 ### YouTube dual subs — catch-up when ZH lags

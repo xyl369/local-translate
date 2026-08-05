@@ -219,7 +219,8 @@
           for (let i = 0; i < n; i++) {
             const zh = String(translated[i]?.text || "").trim();
             const en = STATE.cues[i]?.text;
-            if (zh && en) cacheSet(ck(en), zh);
+            // Only cache real Chinese — bad tlang alignment must not poison the cache.
+            if (zh && en && hasCjk(zh) && zh !== en) cacheSet(ck(en), zh);
           }
         }
       } catch {
@@ -233,8 +234,8 @@
 
   function toYtTlang(code) {
     const c = String(code || "zh-CN");
-    if (c === "zh-CN" || c === "zh") return "zh-Hans";
-    if (c === "zh-TW") return "zh-Hant";
+    if (c === "zh-CN" || c === "zh") return "zh-CN";
+    if (c === "zh-TW") return "zh-TW";
     return c.split("-")[0] || c;
   }
 
@@ -408,45 +409,36 @@
 
   function pushNew(en) {
     const key = cueKey(en);
-    const source = resolveTranslateSource(en);
-    // Whole new current line → old current becomes previous (keep pending so late ZH can fill).
+    // Whole new current line → old current becomes previous
     if (STATE.cur && STATE.cur.key && STATE.cur.key !== key && !isGrowing(STATE.cur.key, key)) {
       STATE.prev = { ...STATE.cur };
-      // Still translating previous line — bump its waiter below via requestTranslate(prev).
-      if (STATE.prev.pending && STATE.prev.en) {
-        requestTranslate(STATE.prev.en, { force: true, target: "prev" });
-      }
     }
 
-    const hit = lookupZh(source) || lookupZh(en);
+    const hit = lookupZh(en);
     STATE.cur = {
       en,
       zh: hit || "",
       key,
       pending: !hit,
-      req: 0,
-      source
+      req: 0
     };
     paint();
-    requestTranslate(source || en, { force: true, target: "cur" });
-    prefetchNeighbors(source || en);
+    requestTranslate(en, { force: true });
+    prefetchNeighbors(en);
   }
 
   function updateCurrent(en) {
     const key = cueKey(en);
-    const source = resolveTranslateSource(en);
-    const hit = lookupZh(source) || lookupZh(en);
+    const hit = lookupZh(en);
     if (!STATE.cur) {
-      STATE.cur = { en, zh: hit || "", key, pending: !hit, req: 0, source };
+      STATE.cur = { en, zh: hit || "", key, pending: !hit, req: 0 };
       paint();
-      requestTranslate(source || en, { force: true, target: "cur" });
+      requestTranslate(en, { force: true });
       return;
     }
 
-    // Growing word-by-word: keep existing translation when possible, update English.
     STATE.cur.en = en;
     STATE.cur.key = key;
-    STATE.cur.source = source || STATE.cur.source;
     if (hit) {
       STATE.cur.zh = hit;
       STATE.cur.pending = false;
@@ -454,43 +446,10 @@
       STATE.cur.pending = true;
     }
     paint();
-
-    // Prefer stable cue text for translate; force when still missing ZH.
-    requestTranslate(source || en, { force: !STATE.cur.zh, target: "cur" });
+    requestTranslate(en, { force: !STATE.cur.zh });
   }
 
-  /**
-   * Prefer full caption-track cue over fragile ASR DOM fragments —
-   * track sentences cache-hit far more often after tlang / prefetch.
-   */
-  function resolveTranslateSource(domText) {
-    const raw = String(domText || "").replace(/\s+/g, " ").trim();
-    if (!raw || !STATE.cues.length) return raw;
-    const k = cueKey(raw);
-    let best = null;
-    let bestScore = 0;
-    const t = STATE.video?.currentTime;
-    const around = typeof t === "number" ? findCueIndex(t) : -1;
-    const lo = around >= 0 ? Math.max(0, around - 2) : 0;
-    const hi = around >= 0 ? Math.min(STATE.cues.length - 1, around + 4) : STATE.cues.length - 1;
-    for (let i = lo; i <= hi; i++) {
-      const c = STATE.cues[i];
-      const ck0 = cueKey(c.text);
-      if (!ck0) continue;
-      let score = 0;
-      if (ck0 === k) score = 1000;
-      else if (k.startsWith(ck0) || ck0.startsWith(k)) score = 400 + Math.min(ck0.length, k.length);
-      else if (ck0.includes(k) || k.includes(ck0)) score = 200 + Math.min(ck0.length, 80);
-      if (around >= 0 && Math.abs(i - around) <= 1) score += 50;
-      if (score > bestScore) {
-        bestScore = score;
-        best = c.text;
-      }
-    }
-    return best || raw;
-  }
-
-  /** Exact cache hit, else longest cached source that is a prefix of `en` (growing ASR). */
+  /** Exact hit, or longest cached prefix (ASR still growing). */
   function lookupZh(en) {
     const text = String(en || "").replace(/\s+/g, " ").trim();
     if (!text) return "";
@@ -501,10 +460,11 @@
     const prefix = `${STATE.targetLang}||`;
     for (const [k, v] of cache) {
       if (!v || !String(k).startsWith(prefix)) continue;
+      if (!hasCjk(v)) continue;
       const src = String(k).slice(prefix.length);
-      if (!src) continue;
+      if (!src || src.length < 8) continue;
       if (text === src) return v;
-      if (text.startsWith(src) && src.length > bestLen && src.length >= 12) {
+      if (text.startsWith(src) && src.length > bestLen) {
         best = v;
         bestLen = src.length;
       }
@@ -512,76 +472,79 @@
     return best;
   }
 
+  function hasCjk(s) {
+    return /[\u4e00-\u9fff]/.test(String(s || ""));
+  }
+
   function backfillPairsFromCache() {
-    if (STATE.cur?.en && !STATE.cur.zh) {
-      const zh = lookupZh(STATE.cur.source || STATE.cur.en) || lookupZh(STATE.cur.en);
-      if (zh) {
-        STATE.cur.zh = zh;
-        STATE.cur.pending = false;
-      }
-    }
-    if (STATE.prev?.en && !STATE.prev.zh) {
-      const zh = lookupZh(STATE.prev.source || STATE.prev.en) || lookupZh(STATE.prev.en);
-      if (zh) {
-        STATE.prev.zh = zh;
-        STATE.prev.pending = false;
+    for (const pair of [STATE.cur, STATE.prev]) {
+      if (!pair?.en || (pair.zh && hasCjk(pair.zh))) continue;
+      const zh = lookupZh(pair.en);
+      if (zh && hasCjk(zh)) {
+        pair.zh = zh;
+        pair.pending = false;
       }
     }
   }
 
-  /** Apply ZH to cur and/or prev — lines often advance before translate returns. */
+  function pairRelated(pair, text) {
+    if (!pair?.en || !text) return false;
+    const a = cueKey(pair.en);
+    const b = cueKey(text);
+    if (!a || !b) return false;
+    if (a === b) return true;
+    if (isGrowing(a, b) || isGrowing(b, a)) return true;
+    // Same line after minor ASR rewrite
+    if (a.length > 20 && b.length > 20 && (a.includes(b.slice(0, 24)) || b.includes(a.slice(0, 24)))) {
+      return true;
+    }
+    return false;
+  }
+
+  /** Apply finished ZH onto cur and/or prev (line may have advanced). */
   function applyZhToPairs(en, zh) {
-    if (!zh) return false;
-    const k = cueKey(en);
+    if (!zh || !hasCjk(zh)) return false;
     let changed = false;
-    const fits = (pair) => {
-      if (!pair?.en) return false;
-      const pk = cueKey(pair.en);
-      const sk = cueKey(pair.source || "");
-      return (
-        pk === k ||
-        sk === k ||
-        isGrowing(pk, k) ||
-        isGrowing(k, pk) ||
-        isGrowing(sk, k) ||
-        isGrowing(k, sk) ||
-        (pair.source && cueKey(pair.source) === k)
-      );
-    };
-    if (fits(STATE.cur)) {
+    if (pairRelated(STATE.cur, en)) {
       STATE.cur.zh = zh;
       STATE.cur.pending = false;
       changed = true;
     }
-    if (fits(STATE.prev)) {
+    if (pairRelated(STATE.prev, en)) {
       STATE.prev.zh = zh;
       STATE.prev.pending = false;
+      changed = true;
+    }
+    // Last resort: current line still waiting — attach latest ZH
+    if (!changed && STATE.cur && !STATE.cur.zh && STATE.cur.pending) {
+      STATE.cur.zh = zh;
+      STATE.cur.pending = false;
       changed = true;
     }
     return changed;
   }
 
-  /** No translation: fire immediately; has translation: debounce to avoid per-char resets */
   function requestTranslate(en, opts = {}) {
-    if (!en) return;
+    if (!en || !STATE.cur) return;
     clearTimeout(STATE.growTimer);
 
     const run = () => {
-      if (!STATE.enabled) return;
-      const latest = String(en || "").trim();
+      if (!STATE.enabled || !STATE.cur) return;
+      const latest = String(STATE.cur.en || en).trim();
       if (!latest) return;
-      // Stamp req on the intended pair so late results still apply after line advance.
-      const target = opts.target === "prev" ? STATE.prev : STATE.cur;
-      if (target) target.req = (target.req || 0) + 1;
-      const my = target ? target.req : 0;
+      const req = (STATE.cur.req = (STATE.cur.req || 0) + 1);
+      const my = req;
+      const asked = latest;
 
-      translateOne(latest)
+      translateOne(asked)
         .then((zh) => {
-          if (!STATE.enabled || !zh) return;
-          if (target && my < (target.req || 0) - 1) return;
-          if (applyZhToPairs(latest, zh)) paint();
+          if (!STATE.enabled) return;
+          // Drop only clearly superseded requests on the *same* cur object
+          if (STATE.cur && my < (STATE.cur.req || 0) - 2) return;
+          if (!zh) return;
+          if (applyZhToPairs(asked, zh)) paint();
           else {
-            // Orphaned result: still cache; warm may backfill next paint.
+            backfillPairsFromCache();
             paint();
           }
         })
@@ -592,16 +555,15 @@
       run();
       return;
     }
-    STATE.growTimer = setTimeout(run, 160);
+    STATE.growTimer = setTimeout(run, 200);
   }
 
   function prefetchNeighbors(en) {
     if (!STATE.cues.length) return;
     const idx = STATE.cues.findIndex((c) => cueKey(c.text) === cueKey(en));
     const start = idx >= 0 ? idx : Math.max(0, STATE.lastCueIdx);
-    if (start < 0) return;
     const batch = [];
-    for (let i = start; i < Math.min(STATE.cues.length, start + 24); i++) {
+    for (let i = start; i < Math.min(STATE.cues.length, start + 16); i++) {
       const t = STATE.cues[i].text;
       if (!cache.has(ck(t)) && !inflight.has(ck(t))) batch.push(t);
     }
@@ -631,10 +593,10 @@
 
   function pairHtml(pair, role, onlyZh) {
     const en = escapeHtml(clip(pair.en, 120));
-    const zh = pair.zh ? escapeHtml(clip(pair.zh, 80)) : "";
+    const zhRaw = pair.zh && hasCjk(pair.zh) ? pair.zh : "";
+    const zh = zhRaw ? escapeHtml(clip(zhRaw, 80)) : "";
     if (onlyZh) {
-      const line = zh || (pair.pending ? "…" : en);
-      return `<div class="lt-yt-pair lt-yt-pair-${role}"><div class="lt-yt-trans">${line}</div></div>`;
+      return `<div class="lt-yt-pair lt-yt-pair-${role}"><div class="lt-yt-trans">${zh || (pair.pending ? "…" : en)}</div></div>`;
     }
     const zhLine = zh
       ? `<div class="lt-yt-trans">${zh}</div>`
@@ -660,15 +622,19 @@
 
   async function translateOne(text) {
     const key = ck(text);
-    if (cache.has(key)) return cache.get(key);
+    if (cache.has(key)) {
+      const hit = cache.get(key);
+      if (hit && hasCjk(hit)) return hit;
+    }
     if (inflight.has(key)) return inflight.get(key);
 
-    // Only via background — page must not call Google directly.
+    // Prefer background; fall back to direct Google if SW messaging fails.
     const p = translateViaBg(text)
+      .catch(() => translateViaFetch(text))
       .then((out) => {
         const zh = String(out || "").trim();
-        if (zh) cacheSet(key, zh);
-        return zh;
+        if (zh && hasCjk(zh)) cacheSet(key, zh);
+        return zh && hasCjk(zh) ? zh : "";
       })
       .finally(() => inflight.delete(key));
 
@@ -697,6 +663,17 @@
         reject(err);
       }
     });
+  }
+
+  async function translateViaFetch(text) {
+    const tl = encodeURIComponent(STATE.targetLang || "zh-CN");
+    const q = encodeURIComponent(text);
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${tl}&dt=t&q=${q}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    if (!Array.isArray(data?.[0])) return "";
+    return data[0].map((seg) => (seg && seg[0]) || "").join("");
   }
 
   async function translateMany(texts) {
