@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.7.1] — 2026-08-05
+
+### YouTube dual subs — catch-up when ZH lags
+
+- Late translations now fill **previous** line too (was stuck English-only after line advance)
+- Map DOM/ASR fragments to full caption-track cues for stabler cache hits
+- Prefix cache lookup while ASR text is still growing
+- Larger / faster prefetch window; show `…` while ZH is pending
+
 ## [3.7.0] — 2026-08-05
 
 ### Optimal free UX path (no local LLM)

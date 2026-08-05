@@ -86,7 +86,7 @@
   const cache = new Map();
   const inflight = new Map();
   const CACHE_MAX = 5000;
-  const TRANS_CONCURRENCY = 8;
+  const TRANS_CONCURRENCY = 12;
 
   document.addEventListener("yt-navigate-finish", () => {
     if (!STATE.enabled) return;
@@ -259,14 +259,26 @@
     if (!STATE.cues.length || !STATE.video) return;
     const now = STATE.video.currentTime || 0;
     const list = [];
-    for (const c of STATE.cues) {
-      if (c.start < now - 2) continue;
-      if (c.start > now + (urgent ? 90 : 45)) break;
-      if (!cache.has(ck(c.text))) list.push(c.text);
-      if (list.length >= (urgent ? 24 : 12)) break;
+    // Always prioritize the cue under the playhead first.
+    const nowIdx = findCueIndex(now);
+    if (nowIdx >= 0) {
+      for (let i = nowIdx; i < Math.min(STATE.cues.length, nowIdx + (urgent ? 36 : 20)); i++) {
+        const t = STATE.cues[i].text;
+        if (!cache.has(ck(t)) && !inflight.has(ck(t))) list.push(t);
+      }
+    } else {
+      for (const c of STATE.cues) {
+        if (c.start < now - 2) continue;
+        if (c.start > now + (urgent ? 120 : 60)) break;
+        if (!cache.has(ck(c.text)) && !inflight.has(ck(c.text))) list.push(c.text);
+        if (list.length >= (urgent ? 36 : 20)) break;
+      }
     }
     if (list.length) await translateMany([...new Set(list)]);
-    if (token === STATE.token && STATE.enabled) paint();
+    if (token === STATE.token && STATE.enabled) {
+      backfillPairsFromCache();
+      paint();
+    }
   }
 
   function warmLoop(token) {
@@ -277,9 +289,9 @@
       } catch {
         /* ignore */
       }
-      if (token === STATE.token && STATE.enabled) setTimeout(tick, 2500);
+      if (token === STATE.token && STATE.enabled) setTimeout(tick, 1200);
     };
-    setTimeout(tick, 800);
+    setTimeout(tick, 400);
   }
 
   function startPoll() {
@@ -396,71 +408,181 @@
 
   function pushNew(en) {
     const key = cueKey(en);
-    // Whole new current line → old current becomes previous
+    const source = resolveTranslateSource(en);
+    // Whole new current line → old current becomes previous (keep pending so late ZH can fill).
     if (STATE.cur && STATE.cur.key && STATE.cur.key !== key && !isGrowing(STATE.cur.key, key)) {
       STATE.prev = { ...STATE.cur };
+      // Still translating previous line — bump its waiter below via requestTranslate(prev).
+      if (STATE.prev.pending && STATE.prev.en) {
+        requestTranslate(STATE.prev.en, { force: true, target: "prev" });
+      }
     }
 
-    const hit = cache.get(ck(en));
+    const hit = lookupZh(source) || lookupZh(en);
     STATE.cur = {
       en,
       zh: hit || "",
       key,
       pending: !hit,
-      req: 0
+      req: 0,
+      source
     };
     paint();
-    requestTranslate(en, { force: true });
-    prefetchNeighbors(en);
+    requestTranslate(source || en, { force: true, target: "cur" });
+    prefetchNeighbors(source || en);
   }
 
   function updateCurrent(en) {
     const key = cueKey(en);
-    const hit = cache.get(ck(en));
+    const source = resolveTranslateSource(en);
+    const hit = lookupZh(source) || lookupZh(en);
     if (!STATE.cur) {
-      STATE.cur = { en, zh: hit || "", key, pending: !hit, req: 0 };
+      STATE.cur = { en, zh: hit || "", key, pending: !hit, req: 0, source };
       paint();
-      requestTranslate(en, { force: true });
+      requestTranslate(source || en, { force: true, target: "cur" });
       return;
     }
 
-    // Growing word-by-word: keep existing translation, update English only
+    // Growing word-by-word: keep existing translation when possible, update English.
     STATE.cur.en = en;
     STATE.cur.key = key;
+    STATE.cur.source = source || STATE.cur.source;
     if (hit) {
       STATE.cur.zh = hit;
       STATE.cur.pending = false;
+    } else if (!STATE.cur.zh) {
+      STATE.cur.pending = true;
     }
     paint();
 
-    // No translation yet → translate now; has translation → short debounce refresh
-    requestTranslate(en, { force: !STATE.cur.zh });
+    // Prefer stable cue text for translate; force when still missing ZH.
+    requestTranslate(source || en, { force: !STATE.cur.zh, target: "cur" });
+  }
+
+  /**
+   * Prefer full caption-track cue over fragile ASR DOM fragments —
+   * track sentences cache-hit far more often after tlang / prefetch.
+   */
+  function resolveTranslateSource(domText) {
+    const raw = String(domText || "").replace(/\s+/g, " ").trim();
+    if (!raw || !STATE.cues.length) return raw;
+    const k = cueKey(raw);
+    let best = null;
+    let bestScore = 0;
+    const t = STATE.video?.currentTime;
+    const around = typeof t === "number" ? findCueIndex(t) : -1;
+    const lo = around >= 0 ? Math.max(0, around - 2) : 0;
+    const hi = around >= 0 ? Math.min(STATE.cues.length - 1, around + 4) : STATE.cues.length - 1;
+    for (let i = lo; i <= hi; i++) {
+      const c = STATE.cues[i];
+      const ck0 = cueKey(c.text);
+      if (!ck0) continue;
+      let score = 0;
+      if (ck0 === k) score = 1000;
+      else if (k.startsWith(ck0) || ck0.startsWith(k)) score = 400 + Math.min(ck0.length, k.length);
+      else if (ck0.includes(k) || k.includes(ck0)) score = 200 + Math.min(ck0.length, 80);
+      if (around >= 0 && Math.abs(i - around) <= 1) score += 50;
+      if (score > bestScore) {
+        bestScore = score;
+        best = c.text;
+      }
+    }
+    return best || raw;
+  }
+
+  /** Exact cache hit, else longest cached source that is a prefix of `en` (growing ASR). */
+  function lookupZh(en) {
+    const text = String(en || "").replace(/\s+/g, " ").trim();
+    if (!text) return "";
+    const exact = cache.get(ck(text));
+    if (exact) return exact;
+    let best = "";
+    let bestLen = 0;
+    const prefix = `${STATE.targetLang}||`;
+    for (const [k, v] of cache) {
+      if (!v || !String(k).startsWith(prefix)) continue;
+      const src = String(k).slice(prefix.length);
+      if (!src) continue;
+      if (text === src) return v;
+      if (text.startsWith(src) && src.length > bestLen && src.length >= 12) {
+        best = v;
+        bestLen = src.length;
+      }
+    }
+    return best;
+  }
+
+  function backfillPairsFromCache() {
+    if (STATE.cur?.en && !STATE.cur.zh) {
+      const zh = lookupZh(STATE.cur.source || STATE.cur.en) || lookupZh(STATE.cur.en);
+      if (zh) {
+        STATE.cur.zh = zh;
+        STATE.cur.pending = false;
+      }
+    }
+    if (STATE.prev?.en && !STATE.prev.zh) {
+      const zh = lookupZh(STATE.prev.source || STATE.prev.en) || lookupZh(STATE.prev.en);
+      if (zh) {
+        STATE.prev.zh = zh;
+        STATE.prev.pending = false;
+      }
+    }
+  }
+
+  /** Apply ZH to cur and/or prev — lines often advance before translate returns. */
+  function applyZhToPairs(en, zh) {
+    if (!zh) return false;
+    const k = cueKey(en);
+    let changed = false;
+    const fits = (pair) => {
+      if (!pair?.en) return false;
+      const pk = cueKey(pair.en);
+      const sk = cueKey(pair.source || "");
+      return (
+        pk === k ||
+        sk === k ||
+        isGrowing(pk, k) ||
+        isGrowing(k, pk) ||
+        isGrowing(sk, k) ||
+        isGrowing(k, sk) ||
+        (pair.source && cueKey(pair.source) === k)
+      );
+    };
+    if (fits(STATE.cur)) {
+      STATE.cur.zh = zh;
+      STATE.cur.pending = false;
+      changed = true;
+    }
+    if (fits(STATE.prev)) {
+      STATE.prev.zh = zh;
+      STATE.prev.pending = false;
+      changed = true;
+    }
+    return changed;
   }
 
   /** No translation: fire immediately; has translation: debounce to avoid per-char resets */
   function requestTranslate(en, opts = {}) {
-    if (!en || !STATE.cur) return;
+    if (!en) return;
     clearTimeout(STATE.growTimer);
 
     const run = () => {
-      if (!STATE.enabled || !STATE.cur) return;
-      const latest = STATE.cur.en || en;
-      const req = (STATE.cur.req = (STATE.cur.req || 0) + 1);
-      const my = req;
+      if (!STATE.enabled) return;
+      const latest = String(en || "").trim();
+      if (!latest) return;
+      // Stamp req on the intended pair so late results still apply after line advance.
+      const target = opts.target === "prev" ? STATE.prev : STATE.cur;
+      if (target) target.req = (target.req || 0) + 1;
+      const my = target ? target.req : 0;
+
       translateOne(latest)
         .then((zh) => {
-          if (!STATE.enabled || !STATE.cur) return;
-          if (my < STATE.cur.req - 1) return;
-          if (
-            cueKey(STATE.cur.en) === cueKey(latest) ||
-            isGrowing(cueKey(latest), STATE.cur.key) ||
-            isGrowing(STATE.cur.key, cueKey(latest))
-          ) {
-            if (zh) {
-              STATE.cur.zh = zh;
-              STATE.cur.pending = false;
-              paint();
-            }
+          if (!STATE.enabled || !zh) return;
+          if (target && my < (target.req || 0) - 1) return;
+          if (applyZhToPairs(latest, zh)) paint();
+          else {
+            // Orphaned result: still cache; warm may backfill next paint.
+            paint();
           }
         })
         .catch((err) => console.warn("[LT subs translate]", err));
@@ -470,24 +592,30 @@
       run();
       return;
     }
-    STATE.growTimer = setTimeout(run, 280);
+    STATE.growTimer = setTimeout(run, 160);
   }
 
   function prefetchNeighbors(en) {
     if (!STATE.cues.length) return;
     const idx = STATE.cues.findIndex((c) => cueKey(c.text) === cueKey(en));
-    const start = idx >= 0 ? idx : STATE.lastCueIdx;
+    const start = idx >= 0 ? idx : Math.max(0, STATE.lastCueIdx);
     if (start < 0) return;
     const batch = [];
-    for (let i = start; i < Math.min(STATE.cues.length, start + 10); i++) {
+    for (let i = start; i < Math.min(STATE.cues.length, start + 24); i++) {
       const t = STATE.cues[i].text;
-      if (!cache.has(ck(t))) batch.push(t);
+      if (!cache.has(ck(t)) && !inflight.has(ck(t))) batch.push(t);
     }
-    if (batch.length) translateMany(batch).then(() => paint());
+    if (batch.length) {
+      translateMany(batch).then(() => {
+        backfillPairsFromCache();
+        paint();
+      });
+    }
   }
 
   function paint() {
     if (!STATE.textEl || !STATE.enabled) return;
+    backfillPairsFromCache();
     const onlyZh = STATE.mode === "translation-only";
     STATE.overlay?.classList.toggle("lt-yt-trans-only", onlyZh);
 
@@ -503,12 +631,14 @@
 
   function pairHtml(pair, role, onlyZh) {
     const en = escapeHtml(clip(pair.en, 120));
-    const zh = pair.zh ? escapeHtml(clip(pair.zh, 52)) : "";
+    const zh = pair.zh ? escapeHtml(clip(pair.zh, 80)) : "";
     if (onlyZh) {
-      return `<div class="lt-yt-pair lt-yt-pair-${role}"><div class="lt-yt-trans">${zh || en}</div></div>`;
+      const line = zh || (pair.pending ? "…" : en);
+      return `<div class="lt-yt-pair lt-yt-pair-${role}"><div class="lt-yt-trans">${line}</div></div>`;
     }
-    // Translation pending: show English only, no ellipsis
-    const zhLine = zh ? `<div class="lt-yt-trans">${zh}</div>` : "";
+    const zhLine = zh
+      ? `<div class="lt-yt-trans">${zh}</div>`
+      : `<div class="lt-yt-trans lt-yt-pending">…</div>`;
     return `<div class="lt-yt-pair lt-yt-pair-${role}"><div class="lt-yt-origin">${en}</div>${zhLine}</div>`;
   }
 

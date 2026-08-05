@@ -219,6 +219,12 @@
   white-space: nowrap;
 }
 
+#lt-yt-overlay .lt-yt-pending {
+  opacity: 0.55;
+  font-weight: 400;
+  letter-spacing: 0.12em;
+}
+
 #lt-yt-overlay .lt-yt-pair-prev {
   opacity: 0.58;
 }
