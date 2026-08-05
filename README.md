@@ -16,25 +16,32 @@ No analytics · no account system · no China-vendor SDKs · settings stay on-de
 |------|--------|
 | Avoid **China-company** analytics / account upload / vendor SDKs | **Yes** — no such endpoints in source |
 | Keep extension settings on **this browser only** | **Yes** (v3.6+) — `chrome.storage.local` only; not Google Sync |
-| Pure offline / no text leaves the machine | **No** — text to translate is sent to **Google** (`translate.googleapis.com`) |
-| Self-hosted / on-device translation engine | **Not yet** — planned as optional `localhost` later |
+| Pure offline / no text leaves the machine | **Optional** — choose **Chrome on-device** engine (newer Chrome). Default **Google gtx** still sends text to Google |
+| Local LLM / Ollama | **Not included** — too heavy for typical laptops; not part of this project |
 
-**What leaves the machine**
+**Engines (v3.7+)**
+
+| Engine | Cost | Leaves machine? | Notes |
+|--------|------|-----------------|-------|
+| **Google Translate (default)** | Free | Yes → Google only | Best day-to-day UX |
+| **Chrome on-device** | Free | No (when API available) | Needs newer Chrome; falls back to Google if unavailable |
+
+**What leaves the machine (Google engine)**
 
 | Data | Destination |
 |------|-------------|
-| Text you ask to translate | `https://translate.googleapis.com/...` (unofficial `client=gtx`) |
-| YouTube caption track fetch | `https://www.youtube.com/api/timedtext?...` (only on YouTube) |
-| Browsing history / full page dumps | **Not uploaded** by this extension |
+| Text you ask to translate | `https://translate.googleapis.com/...` (`client=gtx`) |
+| YouTube caption track / `tlang` | `https://www.youtube.com/api/timedtext?...` |
+| Browsing history / full page dumps | **Not uploaded** |
 | Settings / blocklist | **Device only** (`chrome.storage.local`) |
 
 **What this is *not***
 
-- Not an offline NMT engine
-- Not a China-vendor product (no ByteDance / Alibaba / Tencent / domestic “immersive translate” clients)
-- Not a guarantee against Google reading translated snippets
+- Not a China-vendor product (no ByteDance / Alibaba / Tencent clients)
+- Not a local LLM runner
+- Not a guarantee that websites cannot detect DOM injection
 
-> **Naming:** “Local” means *runs in your browser, settings on-device, no third-party backend we operate*. It does **not** mean offline translation.
+> **Naming:** “Local” means *runs in your browser, settings on-device, no project-operated backend*. Default translation is **not** offline unless you switch to Chrome on-device.
 
 ---
 
@@ -49,20 +56,22 @@ A lightweight Chromium extension that provides:
 3. **Site blocklist** — Never translate specified domains
 4. **Hotkey** — `Alt+A` to toggle translation / restore original
 
-Uses the **Google Translate public API** (`client=gtx`). No backend you must trust, no account system, no analytics.
+Uses the **Google Translate public API** (`client=gtx`) by default. Optional **Chrome on-device** engine for pages where you do not want text to leave the machine. No backend you must trust, no account system, no analytics, **no local LLM**.
 
 ### Features
 
 | Feature | Description |
 |---------|-------------|
 | Viewport translation | Visible area first; scroll backfill |
+| Engine switch | Google (default) or Chrome on-device |
 | Bilingual / translation-only | Switchable display mode |
 | Translation style | Muted / underline / left color bar |
-| Skip code blocks | `<code>` / `<pre>` skipped by default |
+| Skip code + site chrome | `<code>` / `<pre>`; skip nav/header/footer/aside |
+| Retry failed blocks | Click **Retry translate** |
 | Context menu | Translate selection / bilingual page |
-| YouTube subtitles | Dual-line (previous + current) |
+| YouTube subtitles | Dual-line; prefer YouTube `tlang`, then engine |
 | Site blocklist | Per-domain never-translate |
-| Batch merge | Merged requests + LRU cache |
+| On-demand inject | Scripts inject when you translate (or auto options) |
 | On-device settings | `storage.local` only (no Chrome Sync) |
 
 ### Install
@@ -98,8 +107,10 @@ git clone https://github.com/xyl369/local-translate.git
 ```
 local-translate/
 ├── manifest.json
-├── background.js      # Translate API + storage.local
+├── background.js         # Engines + allowlisted fetch
+├── offscreen.html/.js    # Chrome on-device Translator
 ├── content.js / content.css
+├── youtube-bridge.js     # MAIN-world timedtext sniffer
 ├── youtube-subs.js
 ├── popup.html / popup.js / popup.css / popup-i18n.js
 └── icons/

@@ -88,6 +88,7 @@
   let incrementalBusy = false;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (String(message?.type || "").startsWith("OFFSCREEN_")) return;
     if (message.type === "TOGGLE_TRANSLATE") {
       toggleTranslate()
         .then((info) => sendResponse({ ok: true, translated, ...info }))
@@ -313,7 +314,10 @@
       if (!res?.ok) throw new Error(res?.error || "Translation service failed");
       slice.forEach((unit, idx) => {
         const out = String(res.results?.[idx] || "").trim();
-        if (!out) return;
+        if (!out) {
+          if (unit.kind === "text" && injectFailed(unit)) injected += 1;
+          return;
+        }
         if (normalizeCmp(out) === normalizeCmp(unit.text)) return;
         if (unit.kind === "attr") {
           if (injectAttr(unit, out)) injected += 1;
@@ -747,19 +751,29 @@
     let cur = el;
     while (cur && cur !== document.documentElement) {
       if (SKIP_TAGS.has(cur.tagName)) return true;
+      // Skip chrome/nav chrome — focus on main content (fewer false positives on site shells).
+      if (
+        cur.tagName === "NAV" ||
+        cur.tagName === "HEADER" ||
+        cur.tagName === "FOOTER" ||
+        cur.tagName === "ASIDE" ||
+        cur.getAttribute?.("role") === "navigation" ||
+        cur.getAttribute?.("role") === "banner" ||
+        cur.getAttribute?.("role") === "contentinfo"
+      ) {
+        return true;
+      }
       if (skipCode && (cur.tagName === "CODE" || cur.tagName === "PRE")) return true;
       if (cur.isContentEditable) return true;
 
-      // aria-hidden: skip only when element is actually invisible
       if (cur.getAttribute?.("aria-hidden") === "true") {
         try {
           const rect = cur.getBoundingClientRect();
           if (rect.width === 0 && rect.height === 0) return true;
-          // Has size — may be AT-only hidden but visually visible
           const style = getComputedStyle(cur);
           if (style.display === "none" || style.visibility === "hidden") return true;
         } catch {
-          return true; // Unknown — skip conservatively
+          return true;
         }
       }
 
@@ -811,6 +825,42 @@
     return true;
   }
 
+  /** Failed unit: clickable retry stub (no empty silent fail). */
+  function injectFailed(unit) {
+    const el = unit?.el;
+    if (!el || unit.kind !== "text") return false;
+    if (el.querySelector(":scope > .bt-translated-block, :scope > .bt-failed-block")) return false;
+    el.setAttribute(DONE, "1");
+    el.classList.add("bt-host");
+    const node = document.createElement("button");
+    node.type = "button";
+    node.className = "bt-failed-block";
+    node.textContent = "Retry translate";
+    node.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      node.disabled = true;
+      node.textContent = "…";
+      try {
+        const res = await sendMsg({
+          type: "TRANSLATE_BATCH",
+          texts: [unit.text],
+          targetLang: settings?.targetLang
+        });
+        const out = String(res?.results?.[0] || "").trim();
+        if (!out) throw new Error("empty");
+        node.remove();
+        el.removeAttribute(DONE);
+        injectAfter(el, out, unit.text);
+      } catch {
+        node.disabled = false;
+        node.textContent = "Retry translate";
+      }
+    });
+    el.appendChild(node);
+    return true;
+  }
+
   function injectOption(el, translatedText, originalText) {
     if (!el || !translatedText) return false;
     if (el.getAttribute(DONE)) return false;
@@ -855,7 +905,7 @@
   // ─── Restore original ───
 
   function restorePage() {
-    document.querySelectorAll(".bt-translated-block").forEach((n) => n.remove());
+    document.querySelectorAll(".bt-translated-block, .bt-failed-block").forEach((n) => n.remove());
     document.querySelectorAll(`[${DONE}]`).forEach((el) => {
       el.removeAttribute(DONE);
       el.classList.remove("bt-host");

@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Local Translate",
-  "version": "3.6.0",
-  "description": "Auditable bilingual translate + YouTube dual subs. No analytics; settings stay on-device. Text goes to Google Translate only.",
-  "permissions": ["storage", "activeTab", "scripting", "contextMenus"],
+  "version": "3.7.0",
+  "description": "Auditable bilingual translate + YouTube dual subs. Default Google gtx; optional Chrome on-device. No analytics, no local LLM.",
+  "permissions": ["storage", "activeTab", "scripting", "contextMenus", "offscreen", "tabs"],
   "host_permissions": [
     "https://translate.googleapis.com/*",
     "https://www.youtube.com/*",
+    "https://youtube.com/*",
     "http://*/*",
     "https://*/*"
   ],
@@ -29,24 +30,6 @@
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [
-    {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content.js"],
-      "css": ["content.css"],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": [
-        "*://www.youtube.com/*",
-        "*://youtube.com/*",
-        "*://youtu.be/*",
-        "*://m.youtube.com/*"
-      ],
-      "js": ["youtube-subs.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "commands": {
     "toggle-translate": {
       "suggested_key": {

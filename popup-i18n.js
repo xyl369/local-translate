@@ -6,7 +6,12 @@ const I18N = {
     appSubtitle: "Viewport translate · auto-fill on scroll",
     langToggle: "中文",
     ready: "Ready",
-    engineOk: "Engine: Google Translate",
+    engineOk: "Engine: Google Translate (default)",
+    engineLabel: "Translation engine",
+    engine_google: "Google Translate (free, recommended)",
+    engine_chrome: "Chrome on-device (no cloud; needs new Chrome)",
+    engineChrome: "Engine: Chrome on-device",
+    engineChromeFallback: "Chrome API unavailable — falling back to Google when translating",
 
     translatePage: "Translate page",
     restoreOriginal: "Restore original",
@@ -76,7 +81,12 @@ const I18N = {
     appSubtitle: "可视区翻译 · 滚动自动加载",
     langToggle: "EN",
     ready: "就绪",
-    engineOk: "引擎：Google 翻译",
+    engineOk: "引擎：Google 翻译（默认）",
+    engineLabel: "翻译引擎",
+    engine_google: "Google 翻译（免费，推荐）",
+    engine_chrome: "Chrome 端侧（不经云；需较新 Chrome）",
+    engineChrome: "引擎：Chrome 端侧",
+    engineChromeFallback: "Chrome 端侧不可用 — 翻译时将回退到 Google",
 
     translatePage: "翻译页面",
     restoreOriginal: "恢复原文",
@@ -162,6 +172,10 @@ function detectDefaultUiLang() {
 function applyStaticI18n() {
   document.documentElement.lang = uiLang === "zh" ? "zh-CN" : "en";
   document.querySelectorAll("[data-i18n]").forEach((el) => {
+    el.textContent = t(el.getAttribute("data-i18n"));
+  });
+  // Keep select values; re-apply option labels.
+  document.querySelectorAll("select option[data-i18n]").forEach((el) => {
     el.textContent = t(el.getAttribute("data-i18n"));
   });
 }

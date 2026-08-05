@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.7.0] — 2026-08-05
+
+### Optimal free UX path (no local LLM)
+
+- Default engine remains **Google gtx** (free, best day-to-day UX)
+- Optional **Chrome on-device Translator** via offscreen document (no Ollama / no big model)
+- If Chrome API is missing, translation falls back to Google automatically
+
+### Architecture / privacy surface
+
+- Removed always-on content scripts; inject on demand (or when auto-translate / YouTube auto-subs is on)
+- Page scripts no longer call Google directly — translate + YouTube timedtext go through the service worker allowlist
+- YouTube: MAIN-world bridge to capture pot-bearing timedtext URLs; prefer **tlang** whole-track translation before gtx
+
+### Page UX
+
+- Skip `nav` / `header` / `footer` / `aside` shells
+- Failed blocks show a clickable **Retry translate** control
+
 ## [3.6.0] — 2026-08-04
 
 ### Privacy

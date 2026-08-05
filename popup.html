@@ -22,7 +22,15 @@
     </header>
 
     <main>
-      <div id="engine" class="engine ok" data-i18n="engineOk">Engine: Google Translate</div>
+      <div id="engine" class="engine ok" data-i18n="engineOk">Engine: Google Translate (default)</div>
+
+      <label class="field">
+        <span data-i18n="engineLabel">Translation engine</span>
+        <select id="engineSelect">
+          <option value="google" data-i18n="engine_google">Google Translate (free, recommended)</option>
+          <option value="chrome" data-i18n="engine_chrome">Chrome on-device (no cloud; needs new Chrome)</option>
+        </select>
+      </label>
 
       <section class="actions">
         <button id="btn-translate" class="btn primary" data-i18n="translatePage">Translate page</button>

@@ -7,7 +7,8 @@ const DEFAULTS = {
   skipCode: true,
   videoSubsAuto: true,
   videoSubsMode: "bilingual",
-  blockedHosts: []
+  blockedHosts: [],
+  engine: "google"
 };
 
 const $ = (id) => document.getElementById(id);
@@ -17,7 +18,8 @@ const fields = [
   "translationStyle",
   "autoTranslate",
   "skipCode",
-  "videoSubsAuto"
+  "videoSubsAuto",
+  "engineSelect"
 ];
 
 let currentHost = "";
@@ -40,6 +42,7 @@ async function init() {
   $("autoTranslate").checked = !!settings.autoTranslate;
   $("skipCode").checked = settings.skipCode !== false;
   $("videoSubsAuto").checked = settings.videoSubsAuto !== false;
+  $("engineSelect").value = settings.engine === "chrome" ? "chrome" : "google";
 
   currentHost = await getActiveHostname();
   const blocked = normalizeBlocked(settings.blockedHosts);
@@ -58,15 +61,32 @@ async function init() {
   $("btn-yt-stop").addEventListener("click", async () => {
     await sendToActiveTab({ type: "YT_SUBS_STOP" }, { waitMs: 800 });
     setStatus("subtitlesOff");
-    setEngine("engineOk", null, "engine ok");
+    refreshEngineLabel();
   });
 
   if ($("blockSite").checked) {
     setStatus("blocked");
     setEngine("engineNeverHint", null, "engine");
+  } else {
+    refreshEngineLabel();
   }
 
   refreshStatus().catch(() => {});
+}
+
+function refreshEngineLabel() {
+  const eng = $("engineSelect")?.value === "chrome" ? "chrome" : "google";
+  if (eng === "chrome") {
+    setEngine("engineChrome", null, "engine ok");
+    chrome.runtime.sendMessage({ type: "ENGINE_STATUS" }, (res) => {
+      if (!res?.ok) return;
+      if (res.engine === "chrome" && !res.available) {
+        setEngine("engineChromeFallback", null, "engine");
+      }
+    });
+  } else {
+    setEngine("engineOk", null, "engine ok");
+  }
 }
 
 function renderBlockSiteLabel() {
@@ -123,11 +143,13 @@ async function saveFromUI() {
     skipCode: $("skipCode").checked,
     videoSubsAuto: $("videoSubsAuto").checked,
     videoSubsMode: $("displayMode").value,
+    engine: $("engineSelect").value === "chrome" ? "chrome" : "google",
     blockedHosts: normalizeBlocked(prev.blockedHosts)
   };
   await chrome.storage.local.set(settings);
   sendToActiveTab({ type: "SETTINGS_UPDATED", settings }, { waitMs: 600 }).catch(() => {});
   setStatus("saved");
+  refreshEngineLabel();
 }
 
 async function onBlockSiteChange() {
@@ -243,7 +265,6 @@ async function ensureContentScript(tabId, tabUrl) {
     await withTimeout(ping, 250, "ping");
   } catch {
     const files = ["content.js"];
-    if (/youtube\.com|youtu\.be/i.test(tabUrl || "")) files.push("youtube-subs.js");
     try {
       await chrome.scripting.insertCSS({ target: { tabId }, files: ["content.css"] });
     } catch {
@@ -254,6 +275,15 @@ async function ensureContentScript(tabId, tabUrl) {
   }
 
   if (/youtube\.com|youtu\.be/i.test(tabUrl || "")) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["youtube-bridge.js"],
+        world: "MAIN"
+      });
+    } catch {
+      /* ignore */
+    }
     try {
       await withTimeout(chrome.tabs.sendMessage(tabId, { type: "YT_SUBS_STATUS" }), 200, "yt");
     } catch {

@@ -1,6 +1,7 @@
 /**
- * Translation service: Google Translate (public gtx API, higher quality than Chrome on-device)
- * Settings use chrome.storage.local only — never sync to a Google account.
+ * Translation service worker.
+ * Default engine: Google gtx (free, best UX). Optional: Chrome on-device Translator (no big model).
+ * Settings: chrome.storage.local only. All outbound translate/fetch goes through here.
  */
 
 const DEFAULT_SETTINGS = {
@@ -12,12 +13,18 @@ const DEFAULT_SETTINGS = {
   minLength: 2,
   videoSubsAuto: true,
   videoSubsMode: "bilingual",
-  blockedHosts: []
+  blockedHosts: [],
+  // google = free gtx (default); chrome = on-device Translator API when available
+  engine: "google"
 };
 
 const MIGRATED_KEY = "__migratedFromSync";
+const ALLOWED_FETCH_HOSTS = new Set([
+  "translate.googleapis.com",
+  "www.youtube.com",
+  "youtube.com"
+]);
 
-/** One-time: copy chrome.storage.sync → local, then clear sync (avoids Google account sync). */
 function migrateSyncToLocal() {
   return new Promise((resolve) => {
     chrome.storage.local.get([MIGRATED_KEY], (local) => {
@@ -35,35 +42,30 @@ function migrateSyncToLocal() {
   });
 }
 
-// ─── Translation cache (in-memory LRU, max 2000 entries) ───
 const cache = new Map();
 const CACHE_MAX = 2000;
 
-function cacheKey(text, lang) {
-  return `${lang}||${text}`;
+function cacheKey(text, lang, engine) {
+  return `${engine || "google"}||${lang}||${text}`;
 }
 
-function cacheGet(text, lang) {
-  const k = cacheKey(text, lang);
+function cacheGet(text, lang, engine) {
+  const k = cacheKey(text, lang, engine);
   if (!cache.has(k)) return undefined;
   const v = cache.get(k);
-  // LRU: move to end
   cache.delete(k);
   cache.set(k, v);
   return v;
 }
 
-function cacheSet(text, lang, result) {
-  const k = cacheKey(text, lang);
+function cacheSet(text, lang, engine, result) {
+  const k = cacheKey(text, lang, engine);
   if (cache.size >= CACHE_MAX) {
-    // Evict oldest
     const first = cache.keys().next().value;
     cache.delete(first);
   }
   cache.set(k, result);
 }
-
-// ─── Install & context menu ───
 
 chrome.runtime.onInstalled.addListener(() => {
   migrateSyncToLocal().then(() => {
@@ -86,12 +88,11 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-// Also migrate on service worker wake (covers upgrades that skip onInstalled).
 migrateSyncToLocal();
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!tab?.id) return;
-  await ensureTabScript(tab.id);
+  await ensureTabScript(tab.id, tab.url);
   const settings = await getSettings();
   try {
     const host = tab.url ? new URL(tab.url).hostname : "";
@@ -133,11 +134,12 @@ chrome.commands.onCommand.addListener(async (command) => {
   if (command !== "toggle-translate") return;
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) return;
-  await ensureTabScript(tab.id);
+  await ensureTabScript(tab.id, tab.url);
   await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_TRANSLATE" });
 });
 
-async function ensureTabScript(tabId) {
+/** Inject only when needed (not every page by default). */
+async function ensureTabScript(tabId, tabUrl) {
   try {
     await chrome.tabs.sendMessage(tabId, { type: "PING" });
     return;
@@ -148,22 +150,70 @@ async function ensureTabScript(tabId) {
       /* ignore */
     }
     await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
-    try {
-      const tab = await chrome.tabs.get(tabId);
-      if (/youtube\.com|youtu\.be/i.test(tab.url || "")) {
-        await chrome.scripting.executeScript({ target: { tabId }, files: ["youtube-subs.js"] });
+    const url = tabUrl || (await chrome.tabs.get(tabId).then((t) => t.url).catch(() => ""));
+    if (/youtube\.com|youtu\.be/i.test(url || "")) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ["youtube-bridge.js"],
+          world: "MAIN"
+        });
+      } catch {
+        /* ignore */
       }
-    } catch {
-      /* ignore */
+      try {
+        await chrome.scripting.executeScript({ target: { tabId }, files: ["youtube-subs.js"] });
+      } catch {
+        /* ignore */
+      }
     }
   }
 }
 
-// ─── Message handling ───
+/** Auto-inject only for auto-translate / YouTube auto-subs. */
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  if (info.status !== "complete" || !tab?.url) return;
+  if (!/^https?:/i.test(tab.url)) return;
+  getSettings().then(async (s) => {
+    const host = (() => {
+      try {
+        return new URL(tab.url).hostname;
+      } catch {
+        return "";
+      }
+    })();
+    const blocked = Array.isArray(s.blockedHosts) ? s.blockedHosts : [];
+    if (host && blocked.includes(host)) return;
+    const isYt = /youtube\.com|youtu\.be/i.test(tab.url);
+    if (s.autoTranslate || (isYt && s.videoSubsAuto)) {
+      try {
+        await ensureTabScript(tabId, tab.url);
+        if (isYt && s.videoSubsAuto) {
+          await chrome.tabs.sendMessage(tabId, {
+            type: "YT_SUBS_START",
+            targetLang: s.targetLang,
+            mode: s.videoSubsMode || s.displayMode
+          }).catch(() => {});
+        }
+        if (s.autoTranslate && !isYt) {
+          await chrome.tabs.sendMessage(tabId, { type: "TRANSLATE_PAGE" }).catch(() => {});
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+});
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "GET_SETTINGS") {
     getSettings().then((settings) => sendResponse({ ok: true, settings }));
+    return true;
+  }
+  if (message.type === "ENGINE_STATUS") {
+    probeEngine()
+      .then((info) => sendResponse({ ok: true, ...info }))
+      .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
     return true;
   }
   if (message.type === "TRANSLATE_ONE") {
@@ -175,6 +225,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "TRANSLATE_BATCH") {
     translateBatch(message.texts, message.targetLang)
       .then((results) => sendResponse({ ok: true, results }))
+      .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
+    return true;
+  }
+  if (message.type === "FETCH_TEXT") {
+    fetchAllowedText(message.url)
+      .then((text) => sendResponse({ ok: true, text }))
+      .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
+    return true;
+  }
+  if (message.type === "ENSURE_SCRIPTS") {
+    const tabId = _sender?.tab?.id;
+    if (!tabId) {
+      sendResponse({ ok: false, error: "no tab" });
+      return false;
+    }
+    ensureTabScript(tabId, _sender.tab?.url)
+      .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
     return true;
   }
@@ -192,15 +259,39 @@ function getSettings() {
   );
 }
 
-// ─── Core: batched translation ───
+async function probeEngine() {
+  const settings = await getSettings();
+  const engine = settings.engine === "chrome" ? "chrome" : "google";
+  if (engine === "chrome") {
+    const avail = await chromeTranslatorAvailable();
+    return {
+      engine,
+      available: avail,
+      label: avail ? "Chrome on-device" : "Chrome on-device (unavailable → use Google)",
+      offlineCapable: avail
+    };
+  }
+  return { engine: "google", available: true, label: "Google Translate", offlineCapable: false };
+}
 
-// Numbered markers as separators; Google is less likely to eat them. Fall back per-item on split failure.
+async function fetchAllowedText(url) {
+  const u = new URL(String(url || ""));
+  if (!ALLOWED_FETCH_HOSTS.has(u.hostname)) {
+    throw new Error("Host not allowed: " + u.hostname);
+  }
+  if (u.protocol !== "https:") throw new Error("HTTPS only");
+  const res = await fetch(u.toString());
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return await res.text();
+}
+
 const MARK = (i) => `\n\n[[LT${i}]]\n\n`;
 const MARK_SPLIT = /\[\[[\s]*LT[\s]*\d+[\s]*\]\]/i;
 
 async function translateBatch(texts, targetLang) {
   const settings = await getSettings();
   const lang = targetLang || settings.targetLang;
+  const engine = settings.engine === "chrome" ? "chrome" : "google";
   const list = Array.isArray(texts) ? texts : [];
   const results = new Array(list.length).fill("");
 
@@ -208,18 +299,33 @@ async function translateBatch(texts, targetLang) {
   for (let i = 0; i < list.length; i++) {
     const text = String(list[i] || "").trim();
     if (!text) continue;
-    const hit = cacheGet(text, lang);
+    const hit = cacheGet(text, lang, engine);
     if (hit !== undefined) results[i] = hit;
     else uncached.push({ index: i, text });
   }
-
   if (!uncached.length) return results;
+
+  if (engine === "chrome") {
+    const ok = await chromeTranslatorAvailable();
+    if (ok) {
+      for (const item of uncached) {
+        try {
+          const translated = await callChrome(item.text, lang);
+          results[item.index] = translated;
+          if (translated) cacheSet(item.text, lang, engine, translated);
+        } catch {
+          results[item.index] = "";
+        }
+      }
+      return results;
+    }
+    // Fall back to Google if Chrome API missing (keep UX working).
+  }
 
   const MAX_CHARS = 4200;
   const groups = [];
   let currentGroup = [];
   let currentLen = 0;
-
   for (const item of uncached) {
     const addLen = item.text.length + 16;
     if (currentLen + addLen > MAX_CHARS && currentGroup.length > 0) {
@@ -240,39 +346,34 @@ async function translateBatch(texts, targetLang) {
       try {
         const translated = await translateText(group[0].text, lang);
         results[group[0].index] = translated;
-        cacheSet(group[0].text, lang, translated);
+        cacheSet(group[0].text, lang, "google", translated);
       } catch {
         results[group[0].index] = "";
       }
       return;
     }
-
     const merged = group.map((item, j) => `${item.text}${MARK(j)}`).join("");
     try {
       const translatedMerged = await callGoogle(merged, lang);
       const parts = translatedMerged.split(MARK_SPLIT).map((s) => s.trim());
-      // Trailing empty segment is common
       while (parts.length && !parts[parts.length - 1]) parts.pop();
-
       if (parts.length >= group.length) {
         for (let j = 0; j < group.length; j++) {
           const translated = (parts[j] || "").trim();
           results[group[j].index] = translated;
-          if (translated) cacheSet(group[j].text, lang, translated);
+          if (translated) cacheSet(group[j].text, lang, "google", translated);
         }
         return;
       }
     } catch {
       /* fall through */
     }
-
-    // Split failed or request failed: fall back per item
     await Promise.all(
       group.map(async (item) => {
         try {
           const translated = await translateText(item.text, lang);
           results[item.index] = translated;
-          cacheSet(item.text, lang, translated);
+          cacheSet(item.text, lang, "google", translated);
         } catch {
           results[item.index] = "";
         }
@@ -291,36 +392,37 @@ async function translateBatch(texts, targetLang) {
   await Promise.all(
     Array.from({ length: Math.min(CONCURRENCY, groups.length) }, () => groupWorker())
   );
-
   return results;
 }
-
-// ─── Single-item translation ───
 
 async function translateText(text, targetLang) {
   const trimmed = String(text || "").trim();
   if (!trimmed) return "";
+  const settings = await getSettings();
+  const lang = targetLang || settings.targetLang;
+  const engine = settings.engine === "chrome" ? "chrome" : "google";
 
-  // Check cache
-  const hit = cacheGet(trimmed, targetLang);
+  const hit = cacheGet(trimmed, lang, engine);
   if (hit !== undefined) return hit;
 
-  const MAX = 1500;
-  let result;
-  if (trimmed.length <= MAX) {
-    result = await callGoogle(trimmed, targetLang);
+  let result = "";
+  if (engine === "chrome" && (await chromeTranslatorAvailable())) {
+    result = await callChrome(trimmed, lang);
   } else {
-    const parts = splitBySentence(trimmed, MAX);
-    const out = [];
-    for (const part of parts) out.push(await callGoogle(part, targetLang));
-    result = out.join("");
+    const MAX = 1500;
+    if (trimmed.length <= MAX) {
+      result = await callGoogle(trimmed, lang);
+    } else {
+      const parts = splitBySentence(trimmed, MAX);
+      const out = [];
+      for (const part of parts) out.push(await callGoogle(part, lang));
+      result = out.join("");
+    }
   }
 
-  cacheSet(trimmed, targetLang, result);
+  cacheSet(trimmed, lang, engine === "chrome" ? "chrome" : "google", result);
   return result;
 }
-
-// ─── Google Translate API (with retries) ───
 
 async function callGoogle(text, targetLang, retries = 2) {
   const tl = encodeURIComponent(targetLang || "zh-CN");
@@ -349,6 +451,68 @@ async function callGoogle(text, targetLang, retries = 2) {
     }
   }
   return "";
+}
+
+/** Map UI lang codes → Chrome Translator BCP-47 tags. */
+function toChromeLang(code) {
+  const c = String(code || "zh-CN");
+  const map = {
+    "zh-CN": "zh-Hans",
+    "zh-TW": "zh-Hant",
+    zh: "zh-Hans",
+    en: "en",
+    ja: "ja",
+    ko: "ko",
+    fr: "fr",
+    de: "de",
+    es: "es",
+    ru: "ru",
+    pt: "pt",
+    vi: "vi",
+    th: "th"
+  };
+  return map[c] || c;
+}
+
+let chromeAvailCache = { at: 0, value: null };
+
+async function chromeTranslatorAvailable() {
+  if (Date.now() - chromeAvailCache.at < 30000 && chromeAvailCache.value != null) {
+    return chromeAvailCache.value;
+  }
+  try {
+    await ensureOffscreen();
+    const res = await chrome.runtime.sendMessage({ type: "OFFSCREEN_PROBE" });
+    chromeAvailCache = { at: Date.now(), value: !!res?.available };
+    return chromeAvailCache.value;
+  } catch {
+    chromeAvailCache = { at: Date.now(), value: false };
+    return false;
+  }
+}
+
+async function callChrome(text, targetLang) {
+  await ensureOffscreen();
+  const res = await chrome.runtime.sendMessage({
+    type: "OFFSCREEN_TRANSLATE",
+    text,
+    targetLang: toChromeLang(targetLang)
+  });
+  if (!res?.ok) throw new Error(res?.error || "Chrome Translator failed");
+  return String(res.translated || "");
+}
+
+async function ensureOffscreen() {
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: ["OFFSCREEN_DOCUMENT"],
+    documentUrls: [chrome.runtime.getURL("offscreen.html")]
+  });
+  if (contexts.length) return;
+  await chrome.offscreen.createDocument({
+    url: "offscreen.html",
+    reasons: ["DOM_PARSER"],
+    justification: "Run Chrome on-device Translator API without a local LLM"
+  });
 }
 
 function splitBySentence(text, maxLen) {

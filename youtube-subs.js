@@ -27,6 +27,7 @@
   if (!window.__LT_YT_MSG_BOUND__) {
     window.__LT_YT_MSG_BOUND__ = true;
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (String(message?.type || "").startsWith("OFFSCREEN_")) return;
       const api = window.__LT_YT__;
       if (!api) return false;
       if (message.type === "YT_SUBS_START") {
@@ -203,10 +204,55 @@
     if (token !== STATE.token || !STATE.enabled || !raw.length) return;
 
     STATE.cues = mergeShortCues(raw, 0.55);
-    // Pre-translate current window immediately
+
+    // Prefer YouTube whole-track translation (tlang) — free, aligned, less gtx traffic.
+    const tlang = toYtTlang(STATE.targetLang);
+    if (tlang) {
+      try {
+        const tUrl = withQuery(track.baseUrl, { tlang, fmt: "json3" });
+        const translated = await Promise.race([
+          fetchCues(tUrl),
+          sleep(5000).then(() => [])
+        ]);
+        if (token === STATE.token && translated.length) {
+          const n = Math.min(STATE.cues.length, translated.length);
+          for (let i = 0; i < n; i++) {
+            const zh = String(translated[i]?.text || "").trim();
+            const en = STATE.cues[i]?.text;
+            if (zh && en) cacheSet(ck(en), zh);
+          }
+        }
+      } catch {
+        /* fall through to engine pre-translate */
+      }
+    }
+
     await warmWindow(token, true);
-    // Keep warming ahead
     warmLoop(token);
+  }
+
+  function toYtTlang(code) {
+    const c = String(code || "zh-CN");
+    if (c === "zh-CN" || c === "zh") return "zh-Hans";
+    if (c === "zh-TW") return "zh-Hant";
+    return c.split("-")[0] || c;
+  }
+
+  function withQuery(baseUrl, params) {
+    try {
+      const u = new URL(baseUrl, location.origin);
+      Object.entries(params || {}).forEach(([k, v]) => {
+        if (v != null && v !== "") u.searchParams.set(k, v);
+      });
+      return u.toString();
+    } catch {
+      let url = baseUrl;
+      for (const [k, v] of Object.entries(params || {})) {
+        if (new RegExp(`[?&]${k}=`).test(url)) continue;
+        url += (url.includes("?") ? "&" : "?") + `${k}=${encodeURIComponent(v)}`;
+      }
+      return url;
+    }
   }
 
   async function warmWindow(token, urgent) {
@@ -487,8 +533,8 @@
     if (cache.has(key)) return cache.get(key);
     if (inflight.has(key)) return inflight.get(key);
 
+    // Only via background — page must not call Google directly.
     const p = translateViaBg(text)
-      .catch(() => translateViaFetch(text))
       .then((out) => {
         const zh = String(out || "").trim();
         if (zh) cacheSet(key, zh);
@@ -523,17 +569,6 @@
     });
   }
 
-  async function translateViaFetch(text) {
-    const tl = encodeURIComponent(STATE.targetLang || "zh-CN");
-    const q = encodeURIComponent(text);
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${tl}&dt=t&q=${q}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const data = await res.json();
-    if (!Array.isArray(data?.[0])) return "";
-    return data[0].map((seg) => (seg && seg[0]) || "").join("");
-  }
-
   async function translateMany(texts) {
     const uniq = [...new Set(texts.filter(Boolean))];
     const need = uniq.filter((t) => !cache.has(ck(t)) && !inflight.has(ck(t)));
@@ -563,6 +598,20 @@
 
   async function findCaptionTrack(videoId) {
     if (!videoId) return null;
+
+    // Prefer pot-bearing timedtext URL captured in MAIN world.
+    const sniffed = await getSniffedTimedtextUrls();
+    for (const url of sniffed) {
+      try {
+        const cues = await fetchCues(url);
+        if (cues.length) {
+          return { baseUrl: withQuery(url, { fmt: "json3" }), lang: "sniffed" };
+        }
+      } catch {
+        /* try next */
+      }
+    }
+
     const player = await getPlayerResponse();
     const tracks = player?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
     if (Array.isArray(tracks) && tracks.length) {
@@ -588,34 +637,43 @@
     return null;
   }
 
-  function getPlayerResponse() {
+  function pageRpc(type) {
     return new Promise((resolve) => {
+      const id = Math.random().toString(36).slice(2);
       const handler = (event) => {
         if (event.source !== window) return;
-        if (event.data?.type !== "__LT_YT_PLAYER__") return;
+        if (event.data?.source !== "lt-yt-page" || event.data.id !== id) return;
         window.removeEventListener("message", handler);
-        resolve(event.data.payload || null);
+        resolve(event.data);
       };
       window.addEventListener("message", handler);
-      const script = document.createElement("script");
-      script.textContent = `(function(){try{var pr=window.ytInitialPlayerResponse||null;window.postMessage({type:'__LT_YT_PLAYER__',payload:pr},'*');}catch(e){window.postMessage({type:'__LT_YT_PLAYER__',payload:null},'*');}})();`;
-      (document.documentElement || document.head).appendChild(script);
-      script.remove();
+      window.postMessage({ source: "lt-yt-ext", type, id }, "*");
       setTimeout(() => {
         window.removeEventListener("message", handler);
         resolve(null);
-      }, 600);
+      }, 900);
     });
   }
 
-  async function fetchCues(baseUrl) {
-    let url = baseUrl;
-    if (!/[?&]fmt=/.test(url)) url += (url.includes("?") ? "&" : "?") + "fmt=json3";
-    const res = await fetch(url);
-    if (!res.ok) throw new Error("cue http " + res.status);
-    const raw = await res.text();
-    if (!raw.trim().startsWith("{")) return [];
-    const data = JSON.parse(raw);
+  async function getSniffedTimedtextUrls() {
+    const res = await pageRpc("LT_YT_GET_TIMEDTEXT");
+    return Array.isArray(res?.urls) ? res.urls.filter(Boolean) : [];
+  }
+
+  async function getPlayerResponse() {
+    const res = await pageRpc("LT_YT_GET_PLAYER");
+    if (res?.payload) return res.payload;
+    return null;
+  }
+
+  function parseCueJson(raw) {
+    if (!raw || !String(raw).trim().startsWith("{")) return [];
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return [];
+    }
     const cues = [];
     for (const ev of data.events || []) {
       if (!ev.segs || ev.tStartMs == null) continue;
@@ -632,6 +690,29 @@
       });
     }
     return cues;
+  }
+
+  async function fetchCues(baseUrl) {
+    let url = baseUrl;
+    if (!/[?&]fmt=/.test(url)) url += (url.includes("?") ? "&" : "?") + "fmt=json3";
+    const raw = await fetchTextViaBg(url);
+    return parseCueJson(raw);
+  }
+
+  function fetchTextViaBg(url) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ type: "FETCH_TEXT", url }, (res) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        if (!res?.ok) {
+          reject(new Error(res?.error || "fetch failed"));
+          return;
+        }
+        resolve(res.text || "");
+      });
+    });
   }
 
   function mergeShortCues(cues, minDur) {

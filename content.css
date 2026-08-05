@@ -252,6 +252,25 @@ html.lt-yt-hide-native-cc .caption-window {
 }
 
 
+.bt-failed-block {
+  display: inline-block;
+  margin-top: 0.25em;
+  margin-left: 0.35em;
+  padding: 0.1em 0.45em;
+  font: inherit;
+  font-size: 0.85em;
+  color: #9a3412;
+  background: rgba(251, 146, 60, 0.15);
+  border: 1px solid rgba(251, 146, 60, 0.45);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.bt-failed-block:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
 /* Dark page soft override for muted style */
 @media (prefers-color-scheme: dark) {
   .bt-style-muted .bt-translated-block {
