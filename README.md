@@ -143,7 +143,8 @@ Keep it auditable and light: **no analytics, no China-vendor SDKs, no cloud acco
 
 翻译走 **Google Translate 公开接口**（`client=gtx`）。无自建后端、无账号、无埋点。
 
-> 「Local」= 扩展在浏览器内跑、设置在本机；**不是**离线翻译引擎，待译文本会发往 Google。
+> 「Local」= 扩展在浏览器内跑、设置在本机；默认翻译会发往 Google，除非改选 Chrome 端侧。
+> 本项目**不包含**本地大模型（Ollama 等）。
 
 ### 功能
 
@@ -184,7 +185,7 @@ git clone https://github.com/xyl369/local-translate.git
 
 ### 参与贡献
 
-保持可审计：无埋点、无国产 SDK、无云账号同步。欢迎后续接入本机 `localhost` 翻译引擎。
+保持可审计：无埋点、无国产 SDK、无云账号同步、无本地大模型。欢迎 Issue / PR。
 
 ---
 
