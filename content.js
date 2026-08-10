@@ -415,7 +415,9 @@
     const pushTextUnit = (el, text, kind = "text", priority = 0) => {
       if (!el || hostDone.has(el)) return;
       if (el.getAttribute?.(DONE)) return;
-      if (el.querySelector?.(":scope > .bt-translated-block")) return;
+      if (el.closest?.(".bt-translated-block, .bt-failed-block")) return;
+      if (el.querySelector?.(".bt-translated-block, .bt-failed-block, [data-lt-done]")) return;
+      if (kind === "text" && hasTranslatableElementChild(el)) return;
       if (viewportOnly && !isInViewport(el)) return;
       if (nearViewport && !isNearViewport(el)) return;
       const t = String(text || "").replace(/\s+/g, " ").trim();
@@ -457,7 +459,7 @@
         if (!host) continue;
         if (host.tagName === "SELECT") continue;
         if (host.getAttribute(DONE)) continue;
-        if (host.querySelector?.(":scope > .bt-translated-block")) continue;
+        if (host.querySelector?.(".bt-translated-block, .bt-failed-block, [data-lt-done]")) continue;
         if (viewportOnly && !isInViewport(host)) continue;
         if (nearViewport && !isNearViewport(host)) continue;
         if (!hostMap.has(host)) hostMap.set(host, []);
@@ -501,7 +503,8 @@
           "th, [role='columnheader'], [role='heading'], h1, h2, h3, h4, legend, button, [role='button'], label, summary";
         walkRootEl.querySelectorAll?.(chromeSel)?.forEach((el) => {
           if (isSkipped(el, skipCode)) return;
-          const text = getDirectText(el) || (el.textContent || "").replace(/\s+/g, " ").trim();
+          if (hasTranslatableElementChild(el)) return;
+          const text = getDirectText(el);
           if (!text || text.length > 80) return;
           pushTextUnit(el, text, "text", uiPriority(el, text) + 20);
         });
@@ -525,7 +528,7 @@
         "#content-text, ytd-comment-thread-renderer #content-text, .comment-text, yt-formatted-string";
       root.querySelectorAll?.(commentSel)?.forEach((el) => {
         if (isSkipped(el, skipCode)) return;
-        const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+        const text = getElementOriginalText(el);
         if (text.length > 1200) return;
         pushTextUnit(el, text, "text", 1);
       });
@@ -584,6 +587,33 @@
       }
     }
     return text.replace(/\s+/g, " ").trim();
+  }
+
+  /** Text without injected translation / retry nodes (avoids re-translating bilingual output). */
+  function getElementOriginalText(el) {
+    if (!el) return "";
+    const clone = el.cloneNode(true);
+    clone
+      .querySelectorAll(".bt-translated-block, .bt-failed-block, .bt-original-hidden")
+      .forEach((n) => n.remove());
+    return (clone.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
+  /** Skip container chromeSel hits when a child element already carries the label. */
+  function hasTranslatableElementChild(el) {
+    if (!el?.children?.length) return false;
+    for (const child of el.children) {
+      if (
+        child.classList?.contains("bt-translated-block") ||
+        child.classList?.contains("bt-failed-block")
+      ) {
+        continue;
+      }
+      if (SKIP_TAGS.has(child.tagName)) continue;
+      const t = getElementOriginalText(child);
+      if (t && shouldTranslateText(t)) return true;
+    }
+    return false;
   }
 
   // ─── Host selection: leaf-first strategy ───
@@ -807,7 +837,7 @@
 
   function injectAfter(el, translatedText, originalText) {
     if (!el || !translatedText) return false;
-    if (el.querySelector(":scope > .bt-translated-block")) return false;
+    if (el.querySelector(".bt-translated-block, .bt-failed-block")) return false;
 
     el.setAttribute(DONE, "1");
     el.classList.add("bt-host");

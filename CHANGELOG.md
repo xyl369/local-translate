@@ -36,6 +36,12 @@
 - Skip `nav` / `header` / `footer` / `aside` shells
 - Failed blocks show a clickable **Retry translate** control
 
+## [3.6.1] — 2026-08-05
+
+### Fix
+
+- Stop duplicate bilingual lines on nested UI (sidebar links, billing tables): parent containers no longer re-translate child labels; chromeSel uses direct text only
+
 ## [3.6.0] — 2026-08-04
 
 ### Privacy
