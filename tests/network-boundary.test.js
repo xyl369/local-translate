@@ -42,3 +42,14 @@ test("background fetch allowlist stays limited to Google and YouTube", () => {
     "youtube.com"
   ]);
 });
+
+test("timed cues stay authoritative and the bridge recovers late injection", () => {
+  const runtime = read("youtube-subs.js");
+  const domTick = runtime.match(/function tickDom\([\s\S]*?\n  }/i)?.[0] || "";
+  const timelineTick = runtime.match(/function tickTimeline\([\s\S]*?\n  }/i)?.[0] || "";
+  const bridge = read("youtube-bridge.js");
+  assert.match(domTick, /if \(STATE\.cues\.length\) return/);
+  assert.doesNotMatch(timelineTick, /readDomCaption/);
+  assert.match(bridge, /performance\.getEntriesByType\("resource"\)/);
+  assert.match(bridge, /PerformanceObserver/);
+});

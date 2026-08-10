@@ -1,5 +1,20 @@
 # Changelog
 
+## [3.9.0] — 2026-08-10
+
+### Stable YouTube subtitle rhythm
+
+- Make the real timed caption track authoritative; rolling DOM/ASR text is now fallback-only and can no longer overwrite complete cues word by word
+- Recover caption requests made before extension injection by scanning buffered Resource Timing entries and observing future timedtext requests
+- Rebuild fragmented captions into complete 1.8–5.5 second reading units with overlap deduplication and sentence/pause boundaries
+- Keep the immediately previous bilingual cue visible while the current cue advances; extend captions into real silence according to reading length without crossing the next cue
+- Avoid redundant overlay rewrites and use one restrained 140 ms cue transition instead of repeated flicker
+
+### Privacy and verification
+
+- Add timing-gap, ASR rebuilding, overlap, retention, late-injection, and cue-authority regression coverage
+- No new provider, endpoint, SDK, analytics, or telemetry dependency
+
 ## [3.8.0] — 2026-08-10
 
 ### YouTube low-latency subtitle pipeline

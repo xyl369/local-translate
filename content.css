@@ -226,7 +226,7 @@
 }
 
 #lt-yt-overlay .lt-yt-pair-prev {
-  opacity: 0.58;
+  opacity: 0.74;
 }
 
 #lt-yt-overlay .lt-yt-pair-prev .lt-yt-trans {
@@ -235,10 +235,16 @@
 
 #lt-yt-overlay .lt-yt-pair-current {
   opacity: 1;
+  animation: lt-yt-cue-in 140ms ease-out;
 }
 
 #lt-yt-overlay .lt-yt-pair-current .lt-yt-trans {
-  font-size: 13px;
+  font-size: 14px;
+}
+
+@keyframes lt-yt-cue-in {
+  from { opacity: 0.72; }
+  to { opacity: 1; }
 }
 
 #lt-yt-overlay.lt-yt-trans-only .lt-yt-origin {

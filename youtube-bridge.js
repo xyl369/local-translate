@@ -20,6 +20,16 @@
     if (state.timedtextUrls.length > state.max) state.timedtextUrls.length = state.max;
   }
 
+  function scanResourceEntries(entries) {
+    for (const entry of entries || []) {
+      try {
+        if (entry && typeof entry.name === "string") remember(entry.name);
+      } catch (_) {
+        /* ignore malformed performance entries */
+      }
+    }
+  }
+
   try {
     const origFetch = window.fetch;
     if (typeof origFetch === "function") {
@@ -44,6 +54,21 @@
     };
   } catch (_) {}
 
+  // Injection often happens after the player has already requested captions.
+  // Resource Timing retains the full pot-bearing URL, so scan both past and
+  // future entries instead of waiting for another caption request.
+  try {
+    scanResourceEntries(performance.getEntriesByType("resource"));
+    if (typeof PerformanceObserver === "function") {
+      const observer = new PerformanceObserver((list) => {
+        try {
+          scanResourceEntries(list.getEntries());
+        } catch (_) {}
+      });
+      observer.observe({ type: "resource", buffered: true });
+    }
+  } catch (_) {}
+
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     const data = event.data;
@@ -55,6 +80,15 @@
         pr = window.ytInitialPlayerResponse || null;
       } catch (_) {
         pr = null;
+      }
+      try {
+        const player = document.getElementById("movie_player");
+        const live = typeof player?.getPlayerResponse === "function"
+          ? player.getPlayerResponse()
+          : null;
+        if (live?.videoDetails?.videoId) pr = live;
+      } catch (_) {
+        /* keep initial response */
       }
       window.postMessage({ source: "lt-yt-page", type: "LT_YT_PLAYER", payload: pr, id: data.id }, "*");
       return;

@@ -23,7 +23,7 @@
       cues: STATE.cues.length,
       cachedPhrases: cache.size,
       isYouTube: isYouTubeWatch(),
-      mode: STATE.cues.length ? "timeline+dom" : "dom",
+      mode: STATE.cues.length ? "timeline" : "dom-fallback",
       trackReadyMs: STATE.metrics.trackReadyMs,
       lastTranslationMs: STATE.metrics.lastTranslationMs,
       medianTranslationMs: median(STATE.metrics.samples)
@@ -68,6 +68,7 @@
     mode: "bilingual",
     overlay: null,
     textEl: null,
+    lastHtml: "",
     cues: [],
     lastCueIdx: -1,
     lastDomKey: "",
@@ -170,6 +171,7 @@
     STATE.lastDomKey = "";
     STATE.prev = null;
     STATE.cur = null;
+    STATE.lastHtml = "";
     STATE.metrics = { trackReadyMs: null, lastTranslationMs: null, samples: [] };
     clearTimeout(STATE.growTimer);
 
@@ -201,6 +203,7 @@
     document.querySelectorAll("#lt-yt-overlay").forEach((n) => n.remove());
     STATE.overlay = null;
     STATE.textEl = null;
+    STATE.lastHtml = "";
     STATE.drag.dragging = false;
     STATE.drag.bound = false;
     document.documentElement.classList.remove("lt-yt-hide-native-cc");
@@ -224,8 +227,26 @@
     const raw = await Promise.race([sourceTask, sleep(3500).then(() => [])]);
     if (token !== STATE.token || !STATE.enabled || !raw.length) return;
 
-    STATE.cues = CORE.mergeShortCues(raw, 0.55);
+    STATE.cues = CORE.buildReadableCues(raw, {
+      minDuration: 1.8,
+      maxDuration: 5.5,
+      maxChars: 110,
+      pauseBreak: 0.7
+    });
     STATE.metrics.trackReadyMs = Math.round(performance.now() - startedAt);
+
+    // The timed track is now authoritative. Replace rolling DOM fragments with
+    // the complete reading unit under the playhead immediately.
+    const activeIdx = findCueIndex(STATE.video?.currentTime || 0);
+    if (activeIdx >= 0) {
+      STATE.prev = null;
+      STATE.cur = null;
+      STATE.lastDomKey = "";
+      STATE.lastCueIdx = activeIdx;
+      const activeText = STATE.cues[activeIdx].text;
+      STATE.lastDomKey = cueKey(activeText);
+      pushNew(activeText);
+    }
 
     const applyTranslatedTrack = (async () => {
       const translated = await Promise.race([
@@ -353,6 +374,12 @@
     if (a === b) return true;
     if (b.startsWith(a)) return true;
     if (a.startsWith(b) && a.length - b.length < 20) return true;
+    const left = String(a).split(/\s+/).filter(Boolean);
+    const right = String(b).split(/\s+/).filter(Boolean);
+    const maxOverlap = Math.min(left.length, right.length, 8);
+    for (let size = maxOverlap; size >= 2; size -= 1) {
+      if (left.slice(-size).join(" ") === right.slice(0, size).join(" ")) return true;
+    }
     return false;
   }
 
@@ -364,6 +391,9 @@
   }
 
   function tickDom(force) {
+    // Once a real timed track exists, never let rolling on-screen ASR fragments
+    // overwrite stable sentence-level cues. DOM reading is fallback-only.
+    if (STATE.cues.length) return;
     const text = readDomCaption();
     if (!text) return;
     const key = cueKey(text);
@@ -383,8 +413,6 @@
 
   function tickTimeline() {
     if (!STATE.cues.length || !STATE.video) return;
-    // Prefer DOM when captions are visible (finer granularity, closer to CC)
-    if (readDomCaption()) return;
 
     const t = STATE.video.currentTime || 0;
     const idx = findCueIndex(t);
@@ -403,8 +431,12 @@
 
   function pushNew(en) {
     const key = cueKey(en);
+    const now = performance.now();
     // Whole new current line → old current becomes previous
     if (STATE.cur && STATE.cur.key && STATE.cur.key !== key && !isGrowing(STATE.cur.key, key)) {
+      // The current cue must stay time-accurate; the old cue receives one full
+      // additional cue as the previous line. Keeping an older line longer would
+      // hide newer context and feels laggy even when its translation is fast.
       STATE.prev = { ...STATE.cur };
     }
 
@@ -416,8 +448,8 @@
       pending: !hit,
       req: 0,
       asked: "",
-      startedAt: performance.now(),
-      translatedAt: hit ? performance.now() : 0
+      startedAt: now,
+      translatedAt: hit ? now : 0
     };
     paint();
     requestTranslate(en, { force: !STATE.cues.length });
@@ -428,6 +460,7 @@
     const key = cueKey(en);
     const hit = lookupZh(en);
     if (!STATE.cur) {
+      const now = performance.now();
       STATE.cur = {
         en,
         zh: hit || "",
@@ -435,8 +468,8 @@
         pending: !hit,
         req: 0,
         asked: "",
-        startedAt: performance.now(),
-        translatedAt: hit ? performance.now() : 0
+        startedAt: now,
+        translatedAt: hit ? now : 0
       };
       paint();
       requestTranslate(en, { force: !STATE.cues.length });
@@ -448,6 +481,7 @@
     if (hit) {
       STATE.cur.zh = hit;
       STATE.cur.pending = false;
+      recordTranslationLatency(STATE.cur);
     } else if (!STATE.cur.zh) {
       STATE.cur.pending = true;
     }
@@ -489,8 +523,10 @@
   }
 
   function recordTranslationLatency(pair) {
-    if (!pair?.startedAt || pair.translatedAt) return;
-    pair.translatedAt = performance.now();
+    if (!pair?.startedAt) return;
+    const now = performance.now();
+    if (pair.translatedAt) return;
+    pair.translatedAt = now;
     const elapsed = Math.max(0, Math.round(pair.translatedAt - pair.startedAt));
     STATE.metrics.lastTranslationMs = elapsed;
     STATE.metrics.samples.push(elapsed);
@@ -627,7 +663,10 @@
     if (STATE.cur && STATE.cur.en) {
       parts.push(pairHtml(STATE.cur, "current", onlyZh));
     }
-    STATE.textEl.innerHTML = parts.join("");
+    const html = parts.join("");
+    if (html === STATE.lastHtml) return;
+    STATE.lastHtml = html;
+    STATE.textEl.innerHTML = html;
   }
 
   function pairHtml(pair, role, onlyZh) {

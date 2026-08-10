@@ -69,7 +69,7 @@ Uses the **Google Translate public API** (`client=gtx`) by default. Optional **C
 | Skip code + site chrome | `<code>` / `<pre>`; skip nav/header/footer/aside |
 | Retry failed blocks | Click **Retry translate** |
 | Context menu | Translate selection / bilingual page |
-| YouTube subtitles | Dual-line; parallel track discovery, time-aligned `tlang`, batched prefetch |
+| YouTube subtitles | Cue-first dual-line; stable sentence units, time-aligned `tlang`, batched prefetch |
 | Site blocklist | Per-domain never-translate |
 | On-demand inject | Scripts inject when you translate (or auto options) |
 | On-device settings | `storage.local` only (no Chrome Sync) |
@@ -120,6 +120,8 @@ local-translate/
 
 No build step. No npm dependencies.
 
+YouTube pacing is deterministic: the timed caption track wins over rolling page text, fragmented ASR cues are rebuilt into readable units, the next cue is prefetched, and the immediately previous bilingual cue remains visible for context. DOM scraping is used only when no timed track can be recovered.
+
 Run verification with:
 
 ```bash
@@ -163,7 +165,7 @@ Keep it auditable and light: **no analytics, no China-vendor SDKs, no cloud acco
 | 译文样式 | 淡色 / 下划线 / 左侧色条 |
 | 跳过代码块 | 默认不译 `<code>` / `<pre>` |
 | 右键菜单 | 选中 / 整页 |
-| YouTube 字幕 | 双段显示、并行取轨、时间对齐、批量预译 |
+| YouTube 字幕 | 时间轴优先、整句稳定显示、时间对齐、批量预译 |
 | 站点屏蔽 | 按域名 |
 | 本机设置 | 仅 `storage.local`，不同步到 Google 账号 |
 
@@ -175,6 +177,8 @@ git clone https://github.com/xyl369/local-translate.git
 
 1. `chrome://extensions` → 开发者模式 → **加载已解压的扩展程序**  
 2. 升级到 **v3.6+** 后请重新加载扩展一次（会把旧 Sync 设置迁到本机）
+
+YouTube 节奏采用确定性规则：真实字幕时间轴优先，ASR 碎片重组为可读句，提前批译后续字幕；当前句严格同步，上一句继续保留。只有无法取得时间轴时才回退到页面字幕抓取。
 
 ### 权限说明
 

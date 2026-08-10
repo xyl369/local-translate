@@ -42,6 +42,15 @@ test("builds a bounded current-first prefetch window", () => {
   ]);
 });
 
+test("does not render the next cue early during a real gap", () => {
+  const cues = [
+    { start: 0, end: 1, text: "first" },
+    { start: 3, end: 4, text: "second" }
+  ];
+  assert.equal(core.findCueIndex(cues, 2), -1);
+  assert.deepEqual(core.buildPrefetchTexts(cues, 2, { limit: 2, horizon: 10 }), ["second"]);
+});
+
 test("merges only genuinely short adjacent cues", () => {
   const cues = [
     { start: 0, end: 0.3, text: "short" },
@@ -52,4 +61,42 @@ test("merges only genuinely short adjacent cues", () => {
     { start: 0, end: 1.1, text: "short continuation" },
     { start: 2, end: 4, text: "separate" }
   ]);
+});
+
+test("rebuilds fragmented ASR cues into readable timed units", () => {
+  const cues = [
+    { start: 0, end: 0.7, text: "The best" },
+    { start: 0.72, end: 1.5, text: "ideas start" },
+    { start: 1.52, end: 2.4, text: "as questions." },
+    { start: 2.45, end: 3.1, text: "Then" },
+    { start: 3.12, end: 4.2, text: "we test them." }
+  ];
+  assert.deepEqual(core.buildReadableCues(cues), [
+    { start: 0, end: 2.45, text: "The best ideas start as questions." },
+    { start: 2.45, end: 4.65, text: "Then we test them." }
+  ]);
+});
+
+test("extends a readable cue into silence without crossing the next cue", () => {
+  assert.deepEqual(core.buildReadableCues([
+    { start: 0, end: 1, text: "A short sentence." },
+    { start: 4, end: 5, text: "The next sentence." }
+  ]), [
+    { start: 0, end: 2.2, text: "A short sentence." },
+    { start: 4, end: 6.2, text: "The next sentence." }
+  ]);
+});
+
+test("deduplicates rolling caption overlap", () => {
+  assert.equal(
+    core.joinCueText("There are videos on YouTube", "on YouTube with millions of views"),
+    "There are videos on YouTube with millions of views"
+  );
+  assert.equal(core.joinCueText("这是一个测试字幕", "测试字幕系统"), "这是一个测试字幕系统");
+});
+
+test("reading hold stays inside a human-readable range", () => {
+  assert.equal(core.readingHoldMs("很短"), 2200);
+  assert.equal(core.readingHoldMs("这是一条需要更多时间阅读的中文字幕内容"), 2990);
+  assert.equal(core.readingHoldMs("one two three four five six seven eight nine ten"), 3900);
 });

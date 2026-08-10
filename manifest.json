@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Local Translate",
-  "version": "3.8.0",
+  "version": "3.9.0",
   "description": "Auditable bilingual translate + YouTube dual subs. Default Google gtx; optional Chrome on-device. No analytics, no local LLM.",
   "permissions": ["storage", "activeTab", "scripting", "contextMenus", "offscreen", "tabs"],
   "host_permissions": [
