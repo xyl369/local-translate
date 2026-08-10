@@ -7,6 +7,12 @@
 (() => {
   "use strict";
 
+  const CORE = globalThis.__LT_YT_CORE__;
+  if (!CORE) {
+    console.error("[Local Translate] YouTube subtitle core was not loaded");
+    return;
+  }
+
   const API = {
     start: startSubs,
     stop: stopSubs,
@@ -17,7 +23,10 @@
       cues: STATE.cues.length,
       cachedPhrases: cache.size,
       isYouTube: isYouTubeWatch(),
-      mode: STATE.cues.length ? "timeline+dom" : "dom"
+      mode: STATE.cues.length ? "timeline+dom" : "dom",
+      trackReadyMs: STATE.metrics.trackReadyMs,
+      lastTranslationMs: STATE.metrics.lastTranslationMs,
+      medianTranslationMs: median(STATE.metrics.samples)
     })
   };
   window.__LT_YT__ = API;
@@ -68,6 +77,11 @@
     observer: null,
     pollTimer: 0,
     growTimer: 0,
+    metrics: {
+      trackReadyMs: null,
+      lastTranslationMs: null,
+      samples: []
+    },
     // Dual-panel stack: keep at most previous + current line
     prev: null, // { en, zh, key }
     cur: null,
@@ -86,7 +100,8 @@
   const cache = new Map();
   const inflight = new Map();
   const CACHE_MAX = 5000;
-  const TRANS_CONCURRENCY = 12;
+  const BATCH_SIZE = 24;
+  const RETRY_CONCURRENCY = 3;
 
   document.addEventListener("yt-navigate-finish", () => {
     if (!STATE.enabled) return;
@@ -155,6 +170,7 @@
     STATE.lastDomKey = "";
     STATE.prev = null;
     STATE.cur = null;
+    STATE.metrics = { trackReadyMs: null, lastTranslationMs: null, samples: [] };
     clearTimeout(STATE.growTimer);
 
     ensureOverlay();
@@ -191,43 +207,45 @@
   }
 
   async function bootTrack(token) {
+    const startedAt = performance.now();
     const track = await Promise.race([
       findCaptionTrack(STATE.videoId),
-      sleep(2500).then(() => null)
+      sleep(1800).then(() => null)
     ]);
     if (token !== STATE.token || !STATE.enabled || !track) return;
 
-    const raw = await Promise.race([
-      fetchCues(track.baseUrl),
-      sleep(5000).then(() => [])
-    ]);
+    // Start source and YouTube's translated track together. The source track
+    // remains the critical path; a slow translated track never blocks prefetch.
+    const sourceTask = fetchCues(track.baseUrl).catch(() => []);
+    const tlang = toYtTlang(STATE.targetLang);
+    const translatedTask = tlang
+      ? fetchCues(withQuery(track.baseUrl, { tlang, fmt: "json3" })).catch(() => [])
+      : Promise.resolve([]);
+    const raw = await Promise.race([sourceTask, sleep(3500).then(() => [])]);
     if (token !== STATE.token || !STATE.enabled || !raw.length) return;
 
-    STATE.cues = mergeShortCues(raw, 0.55);
+    STATE.cues = CORE.mergeShortCues(raw, 0.55);
+    STATE.metrics.trackReadyMs = Math.round(performance.now() - startedAt);
 
-    // Prefer YouTube whole-track translation (tlang) — free, aligned, less gtx traffic.
-    const tlang = toYtTlang(STATE.targetLang);
-    if (tlang) {
-      try {
-        const tUrl = withQuery(track.baseUrl, { tlang, fmt: "json3" });
-        const translated = await Promise.race([
-          fetchCues(tUrl),
-          sleep(5000).then(() => [])
-        ]);
-        if (token === STATE.token && translated.length) {
-          const n = Math.min(STATE.cues.length, translated.length);
-          for (let i = 0; i < n; i++) {
-            const zh = String(translated[i]?.text || "").trim();
-            const en = STATE.cues[i]?.text;
-            // Only cache real Chinese — bad tlang alignment must not poison the cache.
-            if (zh && en && hasCjk(zh) && zh !== en) cacheSet(ck(en), zh);
-          }
-        }
-      } catch {
-        /* fall through to engine pre-translate */
+    const applyTranslatedTrack = (async () => {
+      const translated = await Promise.race([
+        translatedTask,
+        sleep(5000).then(() => [])
+      ]);
+      if (token !== STATE.token || !STATE.enabled || !translated.length) return;
+      const aligned = CORE.alignTranslatedCues(STATE.cues, translated);
+      for (let i = 0; i < STATE.cues.length; i += 1) {
+        const en = STATE.cues[i]?.text;
+        const zh = String(aligned[i] || "").trim();
+        if (en && isUsableTranslation(zh, en)) cacheSet(ck(en), zh);
       }
-    }
+      backfillPairsFromCache();
+      paint();
+    })();
 
+    // Give a fast tlang response a tiny head start, then immediately batch the
+    // visible and near-future cues through the configured translation engine.
+    await Promise.race([applyTranslatedTrack, sleep(180)]);
     await warmWindow(token, true);
     warmLoop(token);
   }
@@ -259,22 +277,10 @@
   async function warmWindow(token, urgent) {
     if (!STATE.cues.length || !STATE.video) return;
     const now = STATE.video.currentTime || 0;
-    const list = [];
-    // Always prioritize the cue under the playhead first.
-    const nowIdx = findCueIndex(now);
-    if (nowIdx >= 0) {
-      for (let i = nowIdx; i < Math.min(STATE.cues.length, nowIdx + (urgent ? 36 : 20)); i++) {
-        const t = STATE.cues[i].text;
-        if (!cache.has(ck(t)) && !inflight.has(ck(t))) list.push(t);
-      }
-    } else {
-      for (const c of STATE.cues) {
-        if (c.start < now - 2) continue;
-        if (c.start > now + (urgent ? 120 : 60)) break;
-        if (!cache.has(ck(c.text)) && !inflight.has(ck(c.text))) list.push(c.text);
-        if (list.length >= (urgent ? 36 : 20)) break;
-      }
-    }
+    const list = CORE.buildPrefetchTexts(STATE.cues, now, {
+      limit: urgent ? BATCH_SIZE : 16,
+      horizon: urgent ? 90 : 45
+    }).filter((text) => !cache.has(ck(text)) && !inflight.has(ck(text)));
     if (list.length) await translateMany([...new Set(list)]);
     if (token === STATE.token && STATE.enabled) {
       backfillPairsFromCache();
@@ -290,7 +296,7 @@
       } catch {
         /* ignore */
       }
-      if (token === STATE.token && STATE.enabled) setTimeout(tick, 1200);
+      if (token === STATE.token && STATE.enabled) setTimeout(tick, 1600);
     };
     setTimeout(tick, 400);
   }
@@ -302,7 +308,7 @@
       tickDom(false);
       tickTimeline();
       placeOverlay();
-    }, 50);
+    }, 80);
   }
 
   function stopPoll() {
@@ -392,19 +398,7 @@
   }
 
   function findCueIndex(t) {
-    const cues = STATE.cues;
-    let lo = 0;
-    let hi = cues.length - 1;
-    let ans = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (cues[mid].start <= t) {
-        ans = mid;
-        lo = mid + 1;
-      } else hi = mid - 1;
-    }
-    if (ans >= 0 && t <= cues[ans].end + 0.4) return ans;
-    return -1;
+    return CORE.findCueIndex(STATE.cues, t);
   }
 
   function pushNew(en) {
@@ -420,10 +414,13 @@
       zh: hit || "",
       key,
       pending: !hit,
-      req: 0
+      req: 0,
+      asked: "",
+      startedAt: performance.now(),
+      translatedAt: hit ? performance.now() : 0
     };
     paint();
-    requestTranslate(en, { force: true });
+    requestTranslate(en, { force: !STATE.cues.length });
     prefetchNeighbors(en);
   }
 
@@ -431,9 +428,18 @@
     const key = cueKey(en);
     const hit = lookupZh(en);
     if (!STATE.cur) {
-      STATE.cur = { en, zh: hit || "", key, pending: !hit, req: 0 };
+      STATE.cur = {
+        en,
+        zh: hit || "",
+        key,
+        pending: !hit,
+        req: 0,
+        asked: "",
+        startedAt: performance.now(),
+        translatedAt: hit ? performance.now() : 0
+      };
       paint();
-      requestTranslate(en, { force: true });
+      requestTranslate(en, { force: !STATE.cues.length });
       return;
     }
 
@@ -446,7 +452,7 @@
       STATE.cur.pending = true;
     }
     paint();
-    requestTranslate(en, { force: !STATE.cur.zh });
+    requestTranslate(en, { force: false });
   }
 
   /** Exact hit, or longest cached prefix (ASR still growing). */
@@ -476,6 +482,30 @@
     return /[\u4e00-\u9fff]/.test(String(s || ""));
   }
 
+  function isUsableTranslation(output, source) {
+    const translated = String(output || "").trim();
+    if (!translated || translated === String(source || "").trim()) return false;
+    return /^zh(?:-|$)/i.test(STATE.targetLang || "zh-CN") ? hasCjk(translated) : true;
+  }
+
+  function recordTranslationLatency(pair) {
+    if (!pair?.startedAt || pair.translatedAt) return;
+    pair.translatedAt = performance.now();
+    const elapsed = Math.max(0, Math.round(pair.translatedAt - pair.startedAt));
+    STATE.metrics.lastTranslationMs = elapsed;
+    STATE.metrics.samples.push(elapsed);
+    if (STATE.metrics.samples.length > 30) STATE.metrics.samples.shift();
+  }
+
+  function median(values) {
+    if (!Array.isArray(values) || !values.length) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2
+      ? sorted[middle]
+      : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+  }
+
   function backfillPairsFromCache() {
     for (const pair of [STATE.cur, STATE.prev]) {
       if (!pair?.en || (pair.zh && hasCjk(pair.zh))) continue;
@@ -483,6 +513,7 @@
       if (zh && hasCjk(zh)) {
         pair.zh = zh;
         pair.pending = false;
+        recordTranslationLatency(pair);
       }
     }
   }
@@ -508,17 +539,20 @@
     if (pairRelated(STATE.cur, en)) {
       STATE.cur.zh = zh;
       STATE.cur.pending = false;
+      recordTranslationLatency(STATE.cur);
       changed = true;
     }
     if (pairRelated(STATE.prev, en)) {
       STATE.prev.zh = zh;
       STATE.prev.pending = false;
+      recordTranslationLatency(STATE.prev);
       changed = true;
     }
     // Last resort: current line still waiting — attach latest ZH
     if (!changed && STATE.cur && !STATE.cur.zh && STATE.cur.pending) {
       STATE.cur.zh = zh;
       STATE.cur.pending = false;
+      recordTranslationLatency(STATE.cur);
       changed = true;
     }
     return changed;
@@ -532,6 +566,13 @@
       if (!STATE.enabled || !STATE.cur) return;
       const latest = String(STATE.cur.en || en).trim();
       if (!latest) return;
+      const cached = lookupZh(latest);
+      if (cached) {
+        if (applyZhToPairs(latest, cached)) paint();
+        return;
+      }
+      if (STATE.cur.asked === latest && inflight.has(ck(latest))) return;
+      STATE.cur.asked = latest;
       const req = (STATE.cur.req = (STATE.cur.req || 0) + 1);
       const my = req;
       const asked = latest;
@@ -555,18 +596,16 @@
       run();
       return;
     }
-    STATE.growTimer = setTimeout(run, 200);
+    STATE.growTimer = setTimeout(run, 130);
   }
 
   function prefetchNeighbors(en) {
     if (!STATE.cues.length) return;
-    const idx = STATE.cues.findIndex((c) => cueKey(c.text) === cueKey(en));
-    const start = idx >= 0 ? idx : Math.max(0, STATE.lastCueIdx);
-    const batch = [];
-    for (let i = start; i < Math.min(STATE.cues.length, start + 16); i++) {
-      const t = STATE.cues[i].text;
-      if (!cache.has(ck(t)) && !inflight.has(ck(t))) batch.push(t);
-    }
+    const now = STATE.video?.currentTime || 0;
+    const batch = CORE.buildPrefetchTexts(STATE.cues, now, {
+      limit: 12,
+      horizon: 35
+    }).filter((text) => !cache.has(ck(text)) && !inflight.has(ck(text)));
     if (batch.length) {
       translateMany(batch).then(() => {
         backfillPairsFromCache();
@@ -628,13 +667,17 @@
     }
     if (inflight.has(key)) return inflight.get(key);
 
-    // Prefer background; fall back to direct Google if SW messaging fails.
+    // The service worker is the only network boundary. One short retry handles
+    // MV3 worker wake-up without bypassing the audited host allowlist.
     const p = translateViaBg(text)
-      .catch(() => translateViaFetch(text))
+      .catch(async () => {
+        await sleep(80);
+        return translateViaBg(text);
+      })
       .then((out) => {
         const zh = String(out || "").trim();
-        if (zh && hasCjk(zh)) cacheSet(key, zh);
-        return zh && hasCjk(zh) ? zh : "";
+        if (isUsableTranslation(zh, text)) cacheSet(key, zh);
+        return isUsableTranslation(zh, text) ? zh : "";
       })
       .finally(() => inflight.delete(key));
 
@@ -665,34 +708,73 @@
     });
   }
 
-  async function translateViaFetch(text) {
-    const tl = encodeURIComponent(STATE.targetLang || "zh-CN");
-    const q = encodeURIComponent(text);
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${tl}&dt=t&q=${q}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const data = await res.json();
-    if (!Array.isArray(data?.[0])) return "";
-    return data[0].map((seg) => (seg && seg[0]) || "").join("");
-  }
-
   async function translateMany(texts) {
     const uniq = [...new Set(texts.filter(Boolean))];
     const need = uniq.filter((t) => !cache.has(ck(t)) && !inflight.has(ck(t)));
     if (!need.length) return;
 
-    let i = 0;
-    const workers = Array.from({ length: Math.min(TRANS_CONCURRENCY, need.length) }, async () => {
-      while (i < need.length) {
-        const t = need[i++];
-        try {
-          await translateOne(t);
-        } catch {
-          /* ignore */
+    const chunks = [];
+    for (let i = 0; i < need.length; i += BATCH_SIZE) chunks.push(need.slice(i, i + BATCH_SIZE));
+
+    for (const chunk of chunks) {
+      const batch = translateBatchViaBg(chunk);
+      const promises = chunk.map((text, index) => {
+        const key = ck(text);
+        const p = batch
+          .then((results) => {
+            const out = String(results?.[index] || "").trim();
+            if (isUsableTranslation(out, text)) cacheSet(key, out);
+            return isUsableTranslation(out, text) ? out : "";
+          })
+          .catch(() => "")
+          .finally(() => {
+            if (inflight.get(key) === p) inflight.delete(key);
+          });
+        inflight.set(key, p);
+        return p;
+      });
+      await Promise.all(promises);
+    }
+
+    // Retry only missing lines, with restrained concurrency. A 24-line warmup
+    // is normally one request instead of the previous 12 simultaneous calls.
+    const missing = need.filter((text) => !cache.has(ck(text)));
+    let cursor = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(RETRY_CONCURRENCY, missing.length) }, async () => {
+        while (cursor < missing.length) {
+          const text = missing[cursor++];
+          try {
+            await translateOne(text);
+          } catch {
+            /* keep the source subtitle visible */
+          }
         }
+      })
+    );
+  }
+
+  function translateBatchViaBg(texts) {
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.runtime.sendMessage(
+          { type: "TRANSLATE_BATCH", texts, targetLang: STATE.targetLang || "zh-CN" },
+          (res) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+              return;
+            }
+            if (!res?.ok || !Array.isArray(res.results)) {
+              reject(new Error(res?.error || "bg batch translate empty"));
+              return;
+            }
+            resolve(res.results);
+          }
+        );
+      } catch (err) {
+        reject(err);
       }
     });
-    await Promise.all(workers);
   }
 
   function cacheSet(key, val) {
@@ -706,20 +788,19 @@
   async function findCaptionTrack(videoId) {
     if (!videoId) return null;
 
-    // Prefer pot-bearing timedtext URL captured in MAIN world.
-    const sniffed = await getSniffedTimedtextUrls();
-    for (const url of sniffed) {
-      try {
-        const cues = await fetchCues(url);
-        if (cues.length) {
-          return { baseUrl: withQuery(url, { fmt: "json3" }), lang: "sniffed" };
-        }
-      } catch {
-        /* try next */
-      }
+    // MAIN-world signals are independent; waiting serially added up to 1.8s.
+    const [sniffed, player] = await Promise.all([
+      getSniffedTimedtextUrls(),
+      getPlayerResponse()
+    ]);
+    const sniffedSource = sniffed
+      .filter((url) => !/[?&]tlang=/i.test(url))
+      .filter((url) => captionUrlMatchesVideo(url, videoId))
+      .sort((a, b) => captionUrlScore(b) - captionUrlScore(a))[0];
+    if (sniffedSource) {
+      return { baseUrl: withQuery(sniffedSource, { fmt: "json3" }), lang: "sniffed" };
     }
 
-    const player = await getPlayerResponse();
     const tracks = player?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
     if (Array.isArray(tracks) && tracks.length) {
       return tracks
@@ -732,16 +813,45 @@
         })
         .sort((a, b) => b.score - a.score)[0];
     }
-    for (const lang of ["en", "en-US"]) {
-      const url = `https://www.youtube.com/api/timedtext?v=${encodeURIComponent(videoId)}&lang=${lang}&fmt=json3`;
-      try {
-        const cues = await fetchCues(url);
-        if (cues.length) return { baseUrl: url, lang };
-      } catch {
-        /* next */
-      }
+    const fallbacks = ["en", "en-US"].map((lang) => ({
+      lang,
+      baseUrl: `https://www.youtube.com/api/timedtext?v=${encodeURIComponent(videoId)}&lang=${lang}&fmt=json3`
+    }));
+    const checked = await Promise.all(
+      fallbacks.map(async (track) => {
+        try {
+          return (await fetchCues(track.baseUrl)).length ? track : null;
+        } catch {
+          return null;
+        }
+      })
+    );
+    return checked.find(Boolean) || null;
+  }
+
+  function captionUrlScore(value) {
+    try {
+      const url = new URL(value, location.origin);
+      const lang = String(url.searchParams.get("lang") || "").toLowerCase();
+      const kind = String(url.searchParams.get("kind") || "").toLowerCase();
+      let score = 0;
+      if (lang.startsWith("en")) score += 50;
+      if (kind !== "asr") score += 20;
+      if (!url.searchParams.has("tlang")) score += 10;
+      return score;
+    } catch {
+      return 0;
     }
-    return null;
+  }
+
+  function captionUrlMatchesVideo(value, videoId) {
+    try {
+      const url = new URL(value, location.origin);
+      const capturedId = url.searchParams.get("v");
+      return !capturedId || capturedId === videoId;
+    } catch {
+      return false;
+    }
   }
 
   function pageRpc(type) {
@@ -758,7 +868,7 @@
       setTimeout(() => {
         window.removeEventListener("message", handler);
         resolve(null);
-      }, 900);
+      }, 450);
     });
   }
 
@@ -773,37 +883,11 @@
     return null;
   }
 
-  function parseCueJson(raw) {
-    if (!raw || !String(raw).trim().startsWith("{")) return [];
-    let data;
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      return [];
-    }
-    const cues = [];
-    for (const ev of data.events || []) {
-      if (!ev.segs || ev.tStartMs == null) continue;
-      const text = ev.segs
-        .map((s) => s.utf8 || "")
-        .join("")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (!text) continue;
-      cues.push({
-        start: ev.tStartMs / 1000,
-        end: (ev.tStartMs + (ev.dDurationMs || 2000)) / 1000,
-        text
-      });
-    }
-    return cues;
-  }
-
   async function fetchCues(baseUrl) {
     let url = baseUrl;
     if (!/[?&]fmt=/.test(url)) url += (url.includes("?") ? "&" : "?") + "fmt=json3";
     const raw = await fetchTextViaBg(url);
-    return parseCueJson(raw);
+    return CORE.parseCueJson(raw);
   }
 
   function fetchTextViaBg(url) {
@@ -820,26 +904,6 @@
         resolve(res.text || "");
       });
     });
-  }
-
-  function mergeShortCues(cues, minDur) {
-    if (!cues.length) return [];
-    const out = [];
-    let cur = { ...cues[0] };
-    for (let i = 1; i < cues.length; i++) {
-      const n = cues[i];
-      const gap = n.start - cur.end;
-      const dur = cur.end - cur.start;
-      if (dur < minDur && gap < 0.55 && (cur.text + " " + n.text).length < 140) {
-        cur.end = Math.max(cur.end, n.end);
-        cur.text = `${cur.text} ${n.text}`.replace(/\s+/g, " ").trim();
-      } else {
-        out.push(cur);
-        cur = { ...n };
-      }
-    }
-    out.push(cur);
-    return out;
   }
 
   // ─── overlay / drag ───
@@ -974,12 +1038,7 @@
       return;
     }
     STATE.video = video;
-    const loop = () => {
-      if (!STATE.enabled) return;
-      placeOverlay();
-      STATE.raf = requestAnimationFrame(loop);
-    };
-    STATE.raf = requestAnimationFrame(loop);
+    placeOverlay();
   }
 
   function unbindVideo() {

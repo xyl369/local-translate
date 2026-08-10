@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.8.0] — 2026-08-10
+
+### YouTube low-latency subtitle pipeline
+
+- Discover captured timedtext URLs and player caption tracks in parallel; cut the page-RPC ceiling from two serial 900 ms waits to one 450 ms wait
+- Fetch source and YouTube `tlang` tracks concurrently; never block engine prefetch on a slow whole-track translation
+- Align independently segmented `tlang` cues by real time overlap instead of array index
+- Prefetch up to 24 near-future cues in one background batch request; retry only missing lines with concurrency 3
+- Coalesce growing ASR fragments for 130 ms to prevent repeated requests for the same sentence
+- Remove per-frame overlay layout work and expose track/translation latency in `window.__LT_YT__.status()`
+
+### Privacy and verification
+
+- Keep the service worker as the only translation network boundary; remove the content-script direct-fetch fallback
+- Add deterministic cue-alignment, prefetch, batch-count, endpoint-boundary, and China-vendor/telemetry regression tests
+
 ## [3.7.2] — 2026-08-05
 
 ### Fix: YouTube Chinese missing

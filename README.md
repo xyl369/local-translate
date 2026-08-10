@@ -69,7 +69,7 @@ Uses the **Google Translate public API** (`client=gtx`) by default. Optional **C
 | Skip code + site chrome | `<code>` / `<pre>`; skip nav/header/footer/aside |
 | Retry failed blocks | Click **Retry translate** |
 | Context menu | Translate selection / bilingual page |
-| YouTube subtitles | Dual-line; prefer YouTube `tlang`, then engine |
+| YouTube subtitles | Dual-line; parallel track discovery, time-aligned `tlang`, batched prefetch |
 | Site blocklist | Per-domain never-translate |
 | On-demand inject | Scripts inject when you translate (or auto options) |
 | On-device settings | `storage.local` only (no Chrome Sync) |
@@ -111,12 +111,20 @@ local-translate/
 ├── offscreen.html/.js    # Chrome on-device Translator
 ├── content.js / content.css
 ├── youtube-bridge.js     # MAIN-world timedtext sniffer
-├── youtube-subs.js
+├── youtube-subs-core.js  # Pure cue alignment / prefetch helpers
+├── youtube-subs.js       # Low-latency runtime pipeline
 ├── popup.html / popup.js / popup.css / popup-i18n.js
+├── tests/                # Node built-in tests; no test dependency
 └── icons/
 ```
 
 No build step. No npm dependencies.
+
+Run verification with:
+
+```bash
+node --test tests/*.test.js
+```
 
 ### Disclaimer
 
@@ -155,7 +163,7 @@ Keep it auditable and light: **no analytics, no China-vendor SDKs, no cloud acco
 | 译文样式 | 淡色 / 下划线 / 左侧色条 |
 | 跳过代码块 | 默认不译 `<code>` / `<pre>` |
 | 右键菜单 | 选中 / 整页 |
-| YouTube 字幕 | 双段显示 |
+| YouTube 字幕 | 双段显示、并行取轨、时间对齐、批量预译 |
 | 站点屏蔽 | 按域名 |
 | 本机设置 | 仅 `storage.local`，不同步到 Google 账号 |
 

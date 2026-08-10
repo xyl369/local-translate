@@ -290,7 +290,7 @@ async function ensureContentScript(tabId, tabUrl) {
       try {
         await chrome.scripting.executeScript({
           target: { tabId },
-          files: ["youtube-subs.js"]
+          files: ["youtube-subs-core.js", "youtube-subs.js"]
         });
         await new Promise((r) => setTimeout(r, 30));
       } catch {

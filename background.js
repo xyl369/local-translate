@@ -140,32 +140,46 @@ chrome.commands.onCommand.addListener(async (command) => {
 
 /** Inject only when needed (not every page by default). */
 async function ensureTabScript(tabId, tabUrl) {
+  let contentReady = false;
   try {
     await chrome.tabs.sendMessage(tabId, { type: "PING" });
-    return;
+    contentReady = true;
   } catch {
+    /* inject below */
+  }
+  if (!contentReady) {
     try {
       await chrome.scripting.insertCSS({ target: { tabId }, files: ["content.css"] });
     } catch {
       /* ignore */
     }
     await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
-    const url = tabUrl || (await chrome.tabs.get(tabId).then((t) => t.url).catch(() => ""));
-    if (/youtube\.com|youtu\.be/i.test(url || "")) {
-      try {
-        await chrome.scripting.executeScript({
-          target: { tabId },
-          files: ["youtube-bridge.js"],
-          world: "MAIN"
-        });
-      } catch {
-        /* ignore */
-      }
-      try {
-        await chrome.scripting.executeScript({ target: { tabId }, files: ["youtube-subs.js"] });
-      } catch {
-        /* ignore */
-      }
+  }
+
+  const url = tabUrl || (await chrome.tabs.get(tabId).then((t) => t.url).catch(() => ""));
+  if (/youtube\.com|youtu\.be/i.test(url || "")) {
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: "YT_SUBS_STATUS" });
+      return;
+    } catch {
+      /* inject YouTube modules below */
+    }
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["youtube-bridge.js"],
+        world: "MAIN"
+      });
+    } catch {
+      /* ignore */
+    }
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["youtube-subs-core.js", "youtube-subs.js"]
+      });
+    } catch {
+      /* ignore */
     }
   }
 }
@@ -291,7 +305,9 @@ const MARK_SPLIT = /\[\[[\s]*LT[\s]*\d+[\s]*\]\]/i;
 async function translateBatch(texts, targetLang) {
   const settings = await getSettings();
   const lang = targetLang || settings.targetLang;
-  const engine = settings.engine === "chrome" ? "chrome" : "google";
+  const requestedEngine = settings.engine === "chrome" ? "chrome" : "google";
+  const engine =
+    requestedEngine === "chrome" && (await chromeTranslatorAvailable()) ? "chrome" : "google";
   const list = Array.isArray(texts) ? texts : [];
   const results = new Array(list.length).fill("");
 
@@ -306,20 +322,16 @@ async function translateBatch(texts, targetLang) {
   if (!uncached.length) return results;
 
   if (engine === "chrome") {
-    const ok = await chromeTranslatorAvailable();
-    if (ok) {
-      for (const item of uncached) {
-        try {
-          const translated = await callChrome(item.text, lang);
-          results[item.index] = translated;
-          if (translated) cacheSet(item.text, lang, engine, translated);
-        } catch {
-          results[item.index] = "";
-        }
+    for (const item of uncached) {
+      try {
+        const translated = await callChrome(item.text, lang);
+        results[item.index] = translated;
+        if (translated) cacheSet(item.text, lang, engine, translated);
+      } catch {
+        results[item.index] = "";
       }
-      return results;
     }
-    // Fall back to Google if Chrome API missing (keep UX working).
+    return results;
   }
 
   const MAX_CHARS = 4200;
@@ -344,7 +356,7 @@ async function translateBatch(texts, targetLang) {
   async function translateGroup(group) {
     if (group.length === 1) {
       try {
-        const translated = await translateText(group[0].text, lang);
+        const translated = await callGoogle(group[0].text, lang);
         results[group[0].index] = translated;
         cacheSet(group[0].text, lang, "google", translated);
       } catch {
@@ -371,7 +383,7 @@ async function translateBatch(texts, targetLang) {
     await Promise.all(
       group.map(async (item) => {
         try {
-          const translated = await translateText(item.text, lang);
+          const translated = await callGoogle(item.text, lang);
           results[item.index] = translated;
           cacheSet(item.text, lang, "google", translated);
         } catch {
@@ -400,13 +412,15 @@ async function translateText(text, targetLang) {
   if (!trimmed) return "";
   const settings = await getSettings();
   const lang = targetLang || settings.targetLang;
-  const engine = settings.engine === "chrome" ? "chrome" : "google";
+  const requestedEngine = settings.engine === "chrome" ? "chrome" : "google";
+  const engine =
+    requestedEngine === "chrome" && (await chromeTranslatorAvailable()) ? "chrome" : "google";
 
   const hit = cacheGet(trimmed, lang, engine);
   if (hit !== undefined) return hit;
 
   let result = "";
-  if (engine === "chrome" && (await chromeTranslatorAvailable())) {
+  if (engine === "chrome") {
     result = await callChrome(trimmed, lang);
   } else {
     const MAX = 1500;
@@ -420,7 +434,7 @@ async function translateText(text, targetLang) {
     }
   }
 
-  cacheSet(trimmed, lang, engine === "chrome" ? "chrome" : "google", result);
+  cacheSet(trimmed, lang, engine, result);
   return result;
 }
 
