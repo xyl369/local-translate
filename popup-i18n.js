@@ -73,6 +73,8 @@ const I18N = {
     engineTurnOnCC: "Turn on CC; scroll comments with Translate page",
     injectionTimeout: "Injection timeout",
     pageResponseTimeout: "Page response timeout",
+    refreshAfterUpdate: "Extension updated — refresh this page before starting subtitles",
+    subtitleRuntimeFailed: "Subtitle runtime is not connected",
     translationFailedDefault: "Translation failed",
     startFailedDefault: "Failed to start"
   },
@@ -148,6 +150,8 @@ const I18N = {
     engineTurnOnCC: "请开启 CC 字幕；评论区用“翻译页面”滚动加载",
     injectionTimeout: "注入超时",
     pageResponseTimeout: "页面响应超时",
+    refreshAfterUpdate: "扩展已更新，请先刷新当前页面再启动字幕",
+    subtitleRuntimeFailed: "字幕运行组件未连接",
     translationFailedDefault: "翻译失败",
     startFailedDefault: "启动失败"
   }

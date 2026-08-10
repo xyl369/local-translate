@@ -6,6 +6,7 @@ const vm = require("node:vm");
 
 function loadBackground() {
   let fetchCount = 0;
+  let runtimeListener = null;
   const noopEvent = { addListener() {} };
   const chrome = {
     storage: {
@@ -29,19 +30,22 @@ function loadBackground() {
     },
     runtime: {
       onInstalled: noopEvent,
-      onMessage: noopEvent,
+      onMessage: { addListener(listener) { runtimeListener = listener; } },
       getContexts: async () => [],
       getURL: (value) => value,
+      getManifest: () => ({ version: "3.9.1" }),
       sendMessage: async () => ({ available: false })
     },
     contextMenus: { onClicked: noopEvent, removeAll() {}, create() {} },
     commands: { onCommand: noopEvent },
     tabs: { onUpdated: noopEvent },
     scripting: {},
+    action: { setBadgeText() {}, setBadgeBackgroundColor() {} },
     offscreen: {}
   };
   const context = vm.createContext({
     chrome,
+    AbortController,
     URL,
     console,
     setTimeout,
@@ -58,7 +62,7 @@ function loadBackground() {
   });
   const source = fs.readFileSync(path.resolve(__dirname, "../background.js"), "utf8");
   vm.runInContext(source, context, { filename: "background.js" });
-  return { context, getFetchCount: () => fetchCount };
+  return { context, getFetchCount: () => fetchCount, getRuntimeListener: () => runtimeListener };
 }
 
 test("24 subtitle lines are translated in one Google batch request", async () => {
@@ -67,4 +71,31 @@ test("24 subtitle lines are translated in one Google batch request", async () =>
   const output = await context.translateBatch(input, "zh-CN");
   assert.deepEqual(Array.from(output), input.map((_, index) => `译文-${index}`));
   assert.equal(getFetchCount(), 1);
+});
+
+test("runtime health reports the loaded background version and engine", async () => {
+  const { getRuntimeListener } = loadBackground();
+  const listener = getRuntimeListener();
+  const response = await new Promise((resolve, reject) => {
+    const keepAlive = listener({ type: "RUNTIME_HEALTH" }, {}, resolve);
+    if (keepAlive !== true) reject(new Error("health response channel was not kept alive"));
+  });
+  assert.equal(response.ok, true);
+  assert.equal(response.version, "3.9.1");
+  assert.equal(response.engine, "google");
+  assert.equal(response.targetLang, "zh-CN");
+  assert.equal(response.settings.videoSubsAuto, true);
+  assert.equal(response.settings.videoSubsMode, "bilingual");
+});
+
+test("background network calls have a hard timeout", async () => {
+  const { context } = loadBackground();
+  context.fetch = (_url, init = {}) =>
+    new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    });
+  await assert.rejects(
+    context.fetchWithTimeout("https://translate.googleapis.com/test", {}, 15),
+    /Network timeout after 15ms/
+  );
 });

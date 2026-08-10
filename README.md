@@ -118,7 +118,7 @@ local-translate/
 └── icons/
 ```
 
-No build step. No npm dependencies.
+No build step and no runtime npm dependencies. Core tests use Node only; the optional real-browser E2E test uses `playwright-core` with an installed Chrome.
 
 YouTube pacing is deterministic: the timed caption track wins over rolling page text, fragmented ASR cues are rebuilt into readable units, the next cue is prefetched, and the immediately previous bilingual cue remains visible for context. DOM scraping is used only when no timed track can be recovered.
 
@@ -126,6 +126,13 @@ Run verification with:
 
 ```bash
 node --test tests/*.test.js
+```
+
+Full runtime verification:
+
+```bash
+npm install
+npm run verify
 ```
 
 ### Disclaimer

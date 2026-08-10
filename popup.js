@@ -11,6 +11,8 @@ const DEFAULTS = {
   engine: "google"
 };
 
+const EXTENSION_VERSION = chrome.runtime.getManifest().version;
+
 const $ = (id) => document.getElementById(id);
 const fields = [
   "targetLang",
@@ -237,9 +239,20 @@ async function onYtSubsClick() {
         targetLang: $("targetLang").value,
         mode: $("displayMode").value
       },
-      { waitMs: 1200, inject: true }
+      { waitMs: 4500, inject: true }
     );
-    if (res?.ok === false) throw new Error(res.error || t("startFailedDefault"));
+    if (!res || res.ok === false) throw new Error(res?.error || t("startFailedDefault"));
+    const runtime = await sendToActiveTab(
+      { type: "YT_SUBS_STATUS" },
+      { waitMs: 1500, inject: false }
+    );
+    if (
+      !runtime?.enabled ||
+      runtime.extensionVersion !== EXTENSION_VERSION ||
+      runtime.runtimeConnected !== true
+    ) {
+      throw new Error(runtime?.translationError || t("subtitleRuntimeFailed"));
+    }
     setStatus("liveSyncOn");
     setEngine("engineTurnOnCC", null, "engine ok");
   } catch (err) {
@@ -260,10 +273,24 @@ function withTimeout(promise, ms, label) {
 }
 
 async function ensureContentScript(tabId, tabUrl) {
-  const ping = chrome.tabs.sendMessage(tabId, { type: "PING" });
+  let contentReady = false;
   try {
-    await withTimeout(ping, 250, "ping");
-  } catch {
+    const pong = await withTimeout(
+      chrome.tabs.sendMessage(tabId, { type: "PING" }),
+      300,
+      "ping"
+    );
+    if (pong?.ok && pong.version !== EXTENSION_VERSION) {
+      throw new Error(`STALE_PAGE_CONTEXT:${pong.version || "legacy"}`);
+    }
+    contentReady = pong?.version === EXTENSION_VERSION;
+  } catch (err) {
+    if (/STALE_PAGE_CONTEXT/.test(String(err?.message || err))) {
+      throw new Error(t("refreshAfterUpdate"));
+    }
+  }
+
+  if (!contentReady) {
     const files = ["content.js"];
     try {
       await chrome.scripting.insertCSS({ target: { tabId }, files: ["content.css"] });
@@ -272,6 +299,12 @@ async function ensureContentScript(tabId, tabUrl) {
     }
     await chrome.scripting.executeScript({ target: { tabId }, files });
     await new Promise((r) => setTimeout(r, 40));
+    const pong = await withTimeout(
+      chrome.tabs.sendMessage(tabId, { type: "PING" }),
+      500,
+      "content verification"
+    );
+    if (pong?.version !== EXTENSION_VERSION) throw new Error(t("refreshAfterUpdate"));
   }
 
   if (/youtube\.com|youtu\.be/i.test(tabUrl || "")) {
@@ -284,17 +317,35 @@ async function ensureContentScript(tabId, tabUrl) {
     } catch {
       /* ignore */
     }
+    let youtubeReady = false;
     try {
-      await withTimeout(chrome.tabs.sendMessage(tabId, { type: "YT_SUBS_STATUS" }), 200, "yt");
-    } catch {
-      try {
-        await chrome.scripting.executeScript({
-          target: { tabId },
-          files: ["youtube-subs-core.js", "youtube-subs.js"]
-        });
-        await new Promise((r) => setTimeout(r, 30));
-      } catch {
-        /* ignore */
+      const status = await withTimeout(
+        chrome.tabs.sendMessage(tabId, { type: "YT_SUBS_STATUS" }),
+        300,
+        "yt"
+      );
+      if (status?.ok && status.extensionVersion !== EXTENSION_VERSION) {
+        throw new Error(`STALE_YOUTUBE_CONTEXT:${status?.extensionVersion || "legacy"}`);
+      }
+      youtubeReady = status?.extensionVersion === EXTENSION_VERSION;
+    } catch (err) {
+      if (/STALE_YOUTUBE_CONTEXT/.test(String(err?.message || err))) {
+        throw new Error(t("refreshAfterUpdate"));
+      }
+    }
+    if (!youtubeReady) {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["youtube-subs-core.js", "youtube-subs.js"]
+      });
+      await new Promise((r) => setTimeout(r, 40));
+      const status = await withTimeout(
+        chrome.tabs.sendMessage(tabId, { type: "YT_SUBS_STATUS" }),
+        600,
+        "YouTube runtime verification"
+      );
+      if (status?.extensionVersion !== EXTENSION_VERSION) {
+        throw new Error(t("subtitleRuntimeFailed"));
       }
     }
   }
@@ -315,7 +366,7 @@ async function sendToActiveTab(message, opts = {}) {
   }
   try {
     if (opts.inject !== false) {
-      await withTimeout(ensureContentScript(tab.id, tab.url), 900, t("injectionTimeout"));
+      await withTimeout(ensureContentScript(tab.id, tab.url), 3000, t("injectionTimeout"));
     }
     if (message.type === "RESTORE_PAGE") setStatus("restored");
     return await withTimeout(
@@ -324,12 +375,10 @@ async function sendToActiveTab(message, opts = {}) {
       t("pageResponseTimeout")
     );
   } catch (err) {
-    if (message.type === "YT_SUBS_START") {
-      return { ok: true, ready: true, softTimeout: true };
-    }
     const msg = String(err?.message || err);
     setRawStatus(msg);
     setRawEngine(msg, "engine bad");
+    if (message.type === "YT_SUBS_START") throw err;
     return null;
   }
 }
@@ -344,6 +393,11 @@ async function refreshStatus() {
       400,
       "status"
     );
+    if (res?.ok && res.version !== EXTENSION_VERSION) {
+      setStatus("failed");
+      setEngine("refreshAfterUpdate", null, "engine bad");
+      return;
+    }
     if (res?.blocked) {
       $("blockSite").checked = true;
       setStatus("blocked");

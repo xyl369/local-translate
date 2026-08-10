@@ -1,9 +1,18 @@
 (() => {
   "use strict";
 
-  // Prevent duplicate injection
-  if (window.__LT_LOADED__) return;
+  const CONTENT_VERSION = chrome.runtime.getManifest().version;
+
+  // Same-version injection is a no-op. A newer version disposes the previous
+  // controller first so stale observers/listeners cannot keep translating.
+  if (window.__LT_CONTENT_VERSION__ === CONTENT_VERSION) return;
+  try {
+    window.__LT_CONTENT_DISPOSE__?.();
+  } catch {
+    /* legacy versions did not expose a disposer */
+  }
   window.__LT_LOADED__ = true;
+  window.__LT_CONTENT_VERSION__ = CONTENT_VERSION;
 
   const DONE = "data-lt-done";
   const SKIP_TAGS = new Set([
@@ -86,8 +95,13 @@
   let spaTimer = null;
   let scrollTimer = null;
   let incrementalBusy = false;
+  let disposed = false;
+  let scrollHandler = null;
+  let spaSchedule = null;
+  let spaClickHandler = null;
+  const historyHooks = new Map();
 
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  const onRuntimeMessage = (message, _sender, sendResponse) => {
     if (String(message?.type || "").startsWith("OFFSCREEN_")) return;
     if (message.type === "TOGGLE_TRANSLATE") {
       toggleTranslate()
@@ -115,7 +129,8 @@
         translating,
         enabled: isEnabled(),
         blocked,
-        host: location.hostname
+        host: location.hostname,
+        version: CONTENT_VERSION
       });
       return false;
     }
@@ -139,16 +154,19 @@
       return false;
     }
     if (message.type === "PING") {
-      sendResponse({ ok: true });
+      sendResponse({ ok: true, version: CONTENT_VERSION });
       return false;
     }
     return false;
-  });
+  };
 
-  init();
+  chrome.runtime.onMessage.addListener(onRuntimeMessage);
+  window.__LT_CONTENT_DISPOSE__ = dispose;
+  init().catch((err) => console.warn("[Local Translate][init]", err));
 
   async function init() {
     settings = await getSettings();
+    if (disposed) return;
     applyStyleClasses();
     hookSpa();
     hookScroll();
@@ -181,23 +199,42 @@
     }
   }
 
-  function getSettings() {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: "GET_SETTINGS" }, (res) => {
-        resolve(res?.settings || {});
-      });
-    });
+  async function getSettings() {
+    const res = await runtimeMessage({ type: "GET_SETTINGS" }, 2500, "settings");
+    if (!res?.ok || !res.settings) throw new Error(res?.error || "Settings unavailable");
+    return res.settings;
   }
 
   function sendMsg(payload) {
+    const timeout = payload?.type === "TRANSLATE_BATCH" ? 15000 : 5000;
+    return runtimeMessage(payload, timeout, payload?.type || "extension message");
+  }
+
+  function runtimeMessage(payload, timeoutMs, label) {
     return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(payload, (res) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        resolve(res);
-      });
+      let settled = false;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn(value);
+      };
+      const timer = setTimeout(
+        () => finish(reject, new Error(`${label} timeout`)),
+        timeoutMs
+      );
+      try {
+        chrome.runtime.sendMessage(payload, (res) => {
+          const runtimeError = chrome.runtime.lastError;
+          if (runtimeError) {
+            finish(reject, new Error(runtimeError.message));
+            return;
+          }
+          finish(resolve, res);
+        });
+      } catch (err) {
+        finish(reject, err);
+      }
     });
   }
 
@@ -244,8 +281,10 @@
   // ─── Core: viewport-first + fast response + scroll incremental ───
 
   async function startTranslate(opts = {}) {
+    if (disposed) return { count: 0, disposed: true };
     if (translating) return { count: 0 };
     settings = await getSettings();
+    if (disposed) return { count: 0, disposed: true };
     if (isHostBlocked(settings)) {
       restorePage();
       if (opts.force) showToast("This site is blocked", "Never translate this site is enabled");
@@ -261,7 +300,7 @@
       typeof window.__LT_YT_START__ === "function"
     ) {
       try {
-        window.__LT_YT_START__();
+        Promise.resolve(window.__LT_YT_START__()).catch(() => {});
       } catch {
         /* ignore */
       }
@@ -311,6 +350,7 @@
         texts: slice.map((u) => u.text),
         targetLang: settings.targetLang
       });
+      if (disposed) return injected;
       if (!res?.ok) throw new Error(res?.error || "Translation service failed");
       slice.forEach((unit, idx) => {
         const out = String(res.results?.[idx] || "").trim();
@@ -379,17 +419,16 @@
   }
 
   function hookScroll() {
-    if (window.__LT_SCROLL_HOOKED__) return;
-    window.__LT_SCROLL_HOOKED__ = true;
-    const onScroll = () => {
+    if (scrollHandler) return;
+    scrollHandler = () => {
       if (!isEnabled()) return;
       clearTimeout(scrollTimer);
       scrollTimer = setTimeout(() => {
         translateIncremental().catch(() => {});
       }, 180);
     };
-    window.addEventListener("scroll", onScroll, { passive: true, capture: true });
-    document.addEventListener("scroll", onScroll, { passive: true, capture: true });
+    window.addEventListener("scroll", scrollHandler, { passive: true, capture: true });
+    document.addEventListener("scroll", scrollHandler, { passive: true, capture: true });
   }
 
   function normalizeCmp(s) {
@@ -1013,7 +1052,7 @@
     if (spaHooked) return;
     spaHooked = true;
 
-    const schedule = () => {
+    spaSchedule = () => {
       if (!isEnabled()) return;
       clearTimeout(spaTimer);
       spaTimer = setTimeout(() => {
@@ -1025,29 +1064,62 @@
     const wrap = (type) => {
       const raw = history[type];
       if (typeof raw !== "function") return;
-      history[type] = function (...args) {
+      const wrapped = function (...args) {
         const ret = raw.apply(this, args);
-        schedule();
+        spaSchedule();
         return ret;
       };
+      historyHooks.set(type, { raw, wrapped });
+      history[type] = wrapped;
     };
     wrap("pushState");
     wrap("replaceState");
-    window.addEventListener("popstate", schedule);
-    window.addEventListener("hashchange", schedule);
+    window.addEventListener("popstate", spaSchedule);
+    window.addEventListener("hashchange", spaSchedule);
 
     // Sidebar clicks etc. can trigger in-document routing
+    spaClickHandler = (e) => {
+      const a = e.target?.closest?.("a,button,[role='link'],[role='tab'],[role='menuitem']");
+      if (!a || !isEnabled()) return;
+      clearTimeout(spaTimer);
+      spaTimer = setTimeout(() => startTranslate().catch(() => {}), 500);
+    };
     document.addEventListener(
       "click",
-      (e) => {
-        const a = e.target?.closest?.("a,button,[role='link'],[role='tab'],[role='menuitem']");
-        if (!a) return;
-        if (!isEnabled()) return;
-        clearTimeout(spaTimer);
-        spaTimer = setTimeout(() => startTranslate().catch(() => {}), 500);
-      },
+      spaClickHandler,
       true
     );
+  }
+
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    clearTimeout(spaTimer);
+    clearTimeout(scrollTimer);
+    if (observer) observer.disconnect();
+    observer = null;
+    if (scrollHandler) {
+      window.removeEventListener("scroll", scrollHandler, true);
+      document.removeEventListener("scroll", scrollHandler, true);
+      scrollHandler = null;
+    }
+    if (spaSchedule) {
+      window.removeEventListener("popstate", spaSchedule);
+      window.removeEventListener("hashchange", spaSchedule);
+    }
+    if (spaClickHandler) document.removeEventListener("click", spaClickHandler, true);
+    for (const [type, hook] of historyHooks) {
+      if (history[type] === hook.wrapped) history[type] = hook.raw;
+    }
+    historyHooks.clear();
+    try {
+      chrome.runtime.onMessage.removeListener(onRuntimeMessage);
+    } catch {
+      /* an invalidated extension context is already detached */
+    }
+    if (window.__LT_CONTENT_DISPOSE__ === dispose) delete window.__LT_CONTENT_DISPOSE__;
+    if (window.__LT_CONTENT_VERSION__ === CONTENT_VERSION) delete window.__LT_CONTENT_VERSION__;
+    window.__LT_LOADED__ = false;
   }
 
   // ─── UI ───

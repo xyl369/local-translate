@@ -13,7 +13,17 @@
     return;
   }
 
+  const SCRIPT_VERSION = safeManifestVersion();
+  const previousApi = window.__LT_YT__;
+  if (previousApi?.extensionVersion === SCRIPT_VERSION) return;
+  try {
+    previousApi?.stop?.();
+  } catch {
+    /* stale instances are replaced below */
+  }
+
   const API = {
+    extensionVersion: SCRIPT_VERSION,
     start: startSubs,
     stop: stopSubs,
     status: () => ({
@@ -24,6 +34,11 @@
       cachedPhrases: cache.size,
       isYouTube: isYouTubeWatch(),
       mode: STATE.cues.length ? "timeline" : "dom-fallback",
+      extensionVersion: SCRIPT_VERSION,
+      backgroundVersion: STATE.backgroundVersion,
+      runtimeConnected: STATE.runtimeConnected,
+      translationError: STATE.translationError,
+      trackAttempts: STATE.trackAttempt,
       trackReadyMs: STATE.metrics.trackReadyMs,
       lastTranslationMs: STATE.metrics.lastTranslationMs,
       medianTranslationMs: median(STATE.metrics.samples)
@@ -33,20 +48,23 @@
   window.__LT_YT_START__ = () => API.start({});
   window.__LT_YT_STOP__ = () => API.stop();
 
-  if (!window.__LT_YT_MSG_BOUND__) {
+  if (window.__LT_YT_MSG_VERSION__ !== SCRIPT_VERSION) {
+    try {
+      chrome.runtime.onMessage.removeListener?.(window.__LT_YT_MSG_HANDLER__);
+    } catch {
+      /* legacy or invalidated listeners are already detached */
+    }
     window.__LT_YT_MSG_BOUND__ = true;
-    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    window.__LT_YT_MSG_VERSION__ = SCRIPT_VERSION;
+    const messageHandler = (message, _sender, sendResponse) => {
       if (String(message?.type || "").startsWith("OFFSCREEN_")) return;
       const api = window.__LT_YT__;
       if (!api) return false;
       if (message.type === "YT_SUBS_START") {
-        try {
-          const info = api.start(message);
-          sendResponse({ ok: true, ...info });
-        } catch (err) {
-          sendResponse({ ok: false, error: String(err?.message || err) });
-        }
-        return false;
+        Promise.resolve(api.start(message))
+          .then((info) => sendResponse({ ok: true, ...info }))
+          .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
+        return true;
       }
       if (message.type === "YT_SUBS_STOP") {
         api.stop();
@@ -58,7 +76,9 @@
         return false;
       }
       return false;
-    });
+    };
+    window.__LT_YT_MSG_HANDLER__ = messageHandler;
+    chrome.runtime.onMessage.addListener(messageHandler);
   }
 
   const STATE = {
@@ -69,6 +89,9 @@
     overlay: null,
     textEl: null,
     lastHtml: "",
+    translationError: "",
+    runtimeConnected: false,
+    backgroundVersion: "",
     cues: [],
     lastCueIdx: -1,
     lastDomKey: "",
@@ -78,6 +101,8 @@
     observer: null,
     pollTimer: 0,
     growTimer: 0,
+    trackRetryTimer: 0,
+    trackAttempt: 0,
     metrics: {
       trackReadyMs: null,
       lastTranslationMs: null,
@@ -105,19 +130,22 @@
   const RETRY_CONCURRENCY = 3;
 
   document.addEventListener("yt-navigate-finish", () => {
-    if (!STATE.enabled) return;
+    if (window.__LT_YT__ !== API || !STATE.enabled) return;
     const id = getVideoId();
-    if (id && id !== STATE.videoId) startSubs({});
+    if (id && id !== STATE.videoId) startSubs({}).catch(setTranslationError);
   });
 
   setTimeout(async () => {
-    if (!isYouTubeWatch()) return;
+    if (window.__LT_YT__ !== API || !isYouTubeWatch()) return;
     try {
       const s = await getSettings();
       const host = location.hostname || "";
       const blocked = Array.isArray(s.blockedHosts) ? s.blockedHosts : [];
       if (host && blocked.includes(host)) return;
-      if (s.videoSubsAuto) startSubs({ targetLang: s.targetLang, mode: s.videoSubsMode || s.displayMode });
+      if (s.videoSubsAuto) {
+        startSubs({ targetLang: s.targetLang, mode: s.videoSubsMode || s.displayMode })
+          .catch(setTranslationError);
+      }
     } catch {
       /* ignore */
     }
@@ -137,30 +165,47 @@
     }
   }
 
-  function getSettings() {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: "GET_SETTINGS" }, (res) => {
-        resolve(res?.settings || {});
-      });
-    });
+  async function getSettings() {
+    const res = await runtimeMessage({ type: "GET_SETTINGS" }, 1800, "settings");
+    if (!res?.ok || !res.settings) throw new Error(res?.error || "settings unavailable");
+    return res.settings;
   }
 
-  function startSubs(opts = {}) {
+  function safeManifestVersion() {
+    try {
+      return chrome.runtime.getManifest().version || "unknown";
+    } catch {
+      return "disconnected";
+    }
+  }
+
+  async function checkRuntimeHealth() {
+    const health = await runtimeMessage({ type: "RUNTIME_HEALTH" }, 1800, "runtime health");
+    if (!health?.ok) throw new Error(health?.error || "subtitle runtime unavailable");
+    const currentVersion = safeManifestVersion();
+    if (!health.version || health.version !== currentVersion) {
+      STATE.runtimeConnected = false;
+      STATE.backgroundVersion = health.version || "";
+      throw new Error(`扩展版本不一致（页面 ${currentVersion} / 后台 ${health.version || "未知"}），请刷新页面`);
+    }
+    STATE.runtimeConnected = true;
+    STATE.backgroundVersion = health.version;
+    return health;
+  }
+
+  async function startSubs(opts = {}) {
+    if (window.__LT_YT__ !== API) throw new Error("Stale subtitle runtime instance");
     if (!isYouTubeWatch()) throw new Error("YouTube watch pages only");
 
-    STATE.targetLang = opts.targetLang || STATE.targetLang || "zh-CN";
-    STATE.mode = opts.mode || STATE.mode || "bilingual";
-    getSettings().then((s) => {
-      const host = location.hostname || "";
-      const blocked = Array.isArray(s.blockedHosts) ? s.blockedHosts : [];
-      if (host && blocked.includes(host)) {
-        stopSubs();
-        return;
-      }
-      if (!opts.targetLang) STATE.targetLang = s.targetLang || STATE.targetLang;
-      if (!opts.mode) STATE.mode = s.videoSubsMode || s.displayMode || STATE.mode;
-      paint();
-    });
+    const health = await checkRuntimeHealth();
+    const settings = opts.settings || health.settings || (await getSettings());
+    const host = location.hostname || "";
+    const blocked = Array.isArray(settings.blockedHosts) ? settings.blockedHosts : [];
+    if (host && blocked.includes(host)) throw new Error("This site is blocked");
+
+    STATE.targetLang = opts.targetLang || settings.targetLang || STATE.targetLang || "zh-CN";
+    STATE.mode =
+      opts.mode || settings.videoSubsMode || settings.displayMode || STATE.mode || "bilingual";
 
     STATE.enabled = true;
     STATE.token += 1;
@@ -172,6 +217,10 @@
     STATE.prev = null;
     STATE.cur = null;
     STATE.lastHtml = "";
+    STATE.translationError = "";
+    STATE.runtimeConnected = true;
+    STATE.trackAttempt = 0;
+    clearTimeout(STATE.trackRetryTimer);
     STATE.metrics = { trackReadyMs: null, lastTranslationMs: null, samples: [] };
     clearTimeout(STATE.growTimer);
 
@@ -184,9 +233,15 @@
     // Follow current CC immediately
     tickDom(true);
     // Fetch track in background + parallel pre-translate
-    bootTrack(token).catch(() => {});
+    bootTrack(token).catch(() => scheduleTrackRetry(token));
 
-    return { ready: true, instant: true, tip: "Dual-panel sync on; enable CC" };
+    return {
+      ready: true,
+      instant: true,
+      extensionVersion: safeManifestVersion(),
+      runtimeConnected: true,
+      tip: "Dual-panel sync on; enable CC"
+    };
   }
 
   function stopSubs() {
@@ -200,22 +255,29 @@
       STATE.observer = null;
     }
     clearTimeout(STATE.growTimer);
+    clearTimeout(STATE.trackRetryTimer);
     document.querySelectorAll("#lt-yt-overlay").forEach((n) => n.remove());
     STATE.overlay = null;
     STATE.textEl = null;
     STATE.lastHtml = "";
+    STATE.runtimeConnected = false;
     STATE.drag.dragging = false;
     STATE.drag.bound = false;
     document.documentElement.classList.remove("lt-yt-hide-native-cc");
   }
 
   async function bootTrack(token) {
+    STATE.trackAttempt += 1;
     const startedAt = performance.now();
     const track = await Promise.race([
       findCaptionTrack(STATE.videoId),
       sleep(1800).then(() => null)
     ]);
-    if (token !== STATE.token || !STATE.enabled || !track) return;
+    if (token !== STATE.token || !STATE.enabled) return;
+    if (!track) {
+      scheduleTrackRetry(token);
+      return;
+    }
 
     // Start source and YouTube's translated track together. The source track
     // remains the critical path; a slow translated track never blocks prefetch.
@@ -225,7 +287,14 @@
       ? fetchCues(withQuery(track.baseUrl, { tlang, fmt: "json3" })).catch(() => [])
       : Promise.resolve([]);
     const raw = await Promise.race([sourceTask, sleep(3500).then(() => [])]);
-    if (token !== STATE.token || !STATE.enabled || !raw.length) return;
+    if (token !== STATE.token || !STATE.enabled) return;
+    if (!raw.length) {
+      scheduleTrackRetry(token);
+      return;
+    }
+
+    clearTimeout(STATE.trackRetryTimer);
+    STATE.trackRetryTimer = 0;
 
     STATE.cues = CORE.buildReadableCues(raw, {
       minDuration: 1.8,
@@ -269,6 +338,18 @@
     await Promise.race([applyTranslatedTrack, sleep(180)]);
     await warmWindow(token, true);
     warmLoop(token);
+  }
+
+  function scheduleTrackRetry(token) {
+    if (token !== STATE.token || !STATE.enabled || STATE.cues.length) return;
+    clearTimeout(STATE.trackRetryTimer);
+    const attempt = Math.max(1, STATE.trackAttempt);
+    const delay = Math.min(4000, 500 * 1.55 ** Math.min(attempt - 1, 6));
+    STATE.trackRetryTimer = setTimeout(() => {
+      STATE.trackRetryTimer = 0;
+      if (token !== STATE.token || !STATE.enabled || STATE.cues.length) return;
+      bootTrack(token).catch(() => scheduleTrackRetry(token));
+    }, Math.round(delay));
   }
 
   function toYtTlang(code) {
@@ -452,7 +533,9 @@
       translatedAt: hit ? now : 0
     };
     paint();
-    requestTranslate(en, { force: !STATE.cues.length });
+    // Current text gets its own priority request. Never make the visible cue
+    // wait behind a 24-line future-prefetch batch.
+    requestTranslate(en, { force: true });
     prefetchNeighbors(en);
   }
 
@@ -500,7 +583,7 @@
     const prefix = `${STATE.targetLang}||`;
     for (const [k, v] of cache) {
       if (!v || !String(k).startsWith(prefix)) continue;
-      if (!hasCjk(v)) continue;
+      if (!hasTargetScript(v)) continue;
       const src = String(k).slice(prefix.length);
       if (!src || src.length < 8) continue;
       if (text === src) return v;
@@ -516,10 +599,42 @@
     return /[\u4e00-\u9fff]/.test(String(s || ""));
   }
 
+  function hasTargetScript(value) {
+    const text = String(value || "").trim();
+    if (!text) return false;
+    return /^zh(?:-|$)/i.test(STATE.targetLang || "zh-CN") ? hasCjk(text) : true;
+  }
+
   function isUsableTranslation(output, source) {
     const translated = String(output || "").trim();
     if (!translated || translated === String(source || "").trim()) return false;
-    return /^zh(?:-|$)/i.test(STATE.targetLang || "zh-CN") ? hasCjk(translated) : true;
+    return hasTargetScript(translated);
+  }
+
+  function translationErrorLabel(error) {
+    const detail = String(error?.message || error || "");
+    if (/context invalidated|extension.*reload|receiving end does not exist|版本不一致|stale subtitle runtime/i.test(detail)) {
+      return "扩展已更新，请刷新此页面";
+    }
+    if (/timeout|timed out/i.test(detail)) return "翻译连接超时，正在重试";
+    return "翻译暂时不可用，请刷新页面";
+  }
+
+  function setTranslationError(error) {
+    STATE.translationError = translationErrorLabel(error);
+    if (/context invalidated|receiving end|runtime health|settings|timeout|版本不一致|stale subtitle runtime/i.test(
+      String(error?.message || error || "")
+    )) {
+      STATE.runtimeConnected = false;
+    }
+    paint();
+  }
+
+  function clearTranslationError() {
+    if (!STATE.translationError) return;
+    STATE.translationError = "";
+    STATE.runtimeConnected = true;
+    paint();
   }
 
   function recordTranslationLatency(pair) {
@@ -544,11 +659,12 @@
 
   function backfillPairsFromCache() {
     for (const pair of [STATE.cur, STATE.prev]) {
-      if (!pair?.en || (pair.zh && hasCjk(pair.zh))) continue;
+      if (!pair?.en || (pair.zh && hasTargetScript(pair.zh))) continue;
       const zh = lookupZh(pair.en);
-      if (zh && hasCjk(zh)) {
+      if (zh && hasTargetScript(zh)) {
         pair.zh = zh;
         pair.pending = false;
+        STATE.translationError = "";
         recordTranslationLatency(pair);
       }
     }
@@ -570,7 +686,8 @@
 
   /** Apply finished ZH onto cur and/or prev (line may have advanced). */
   function applyZhToPairs(en, zh) {
-    if (!zh || !hasCjk(zh)) return false;
+    if (!zh || !hasTargetScript(zh)) return false;
+    STATE.translationError = "";
     let changed = false;
     if (pairRelated(STATE.cur, en)) {
       STATE.cur.zh = zh;
@@ -582,13 +699,6 @@
       STATE.prev.zh = zh;
       STATE.prev.pending = false;
       recordTranslationLatency(STATE.prev);
-      changed = true;
-    }
-    // Last resort: current line still waiting — attach latest ZH
-    if (!changed && STATE.cur && !STATE.cur.zh && STATE.cur.pending) {
-      STATE.cur.zh = zh;
-      STATE.cur.pending = false;
-      recordTranslationLatency(STATE.cur);
       changed = true;
     }
     return changed;
@@ -619,13 +729,19 @@
           // Drop only clearly superseded requests on the *same* cur object
           if (STATE.cur && my < (STATE.cur.req || 0) - 2) return;
           if (!zh) return;
+          clearTranslationError();
           if (applyZhToPairs(asked, zh)) paint();
           else {
             backfillPairsFromCache();
             paint();
           }
         })
-        .catch((err) => console.warn("[LT subs translate]", err));
+        .catch((err) => {
+          console.warn("[LT subs translate]", err);
+          if (pairRelated(STATE.cur, asked) && !STATE.cur?.zh) {
+            setTranslationError(err);
+          }
+        });
     };
 
     if (opts.force) {
@@ -641,7 +757,12 @@
     const batch = CORE.buildPrefetchTexts(STATE.cues, now, {
       limit: 12,
       horizon: 35
-    }).filter((text) => !cache.has(ck(text)) && !inflight.has(ck(text)));
+    }).filter(
+      (text) =>
+        cueKey(text) !== cueKey(en) &&
+        !cache.has(ck(text)) &&
+        !inflight.has(ck(text))
+    );
     if (batch.length) {
       translateMany(batch).then(() => {
         backfillPairsFromCache();
@@ -671,14 +792,20 @@
 
   function pairHtml(pair, role, onlyZh) {
     const en = escapeHtml(clip(pair.en, 120));
-    const zhRaw = pair.zh && hasCjk(pair.zh) ? pair.zh : "";
+    const zhRaw = pair.zh && hasTargetScript(pair.zh) ? pair.zh : "";
     const zh = zhRaw ? escapeHtml(clip(zhRaw, 80)) : "";
+    const pendingText = STATE.translationError
+      ? escapeHtml(STATE.translationError)
+      : "…";
+    const pendingClass = STATE.translationError
+      ? "lt-yt-pending lt-yt-error"
+      : "lt-yt-pending";
     if (onlyZh) {
-      return `<div class="lt-yt-pair lt-yt-pair-${role}"><div class="lt-yt-trans">${zh || (pair.pending ? "…" : en)}</div></div>`;
+      return `<div class="lt-yt-pair lt-yt-pair-${role}"><div class="lt-yt-trans ${zh ? "" : pendingClass}">${zh || (pair.pending ? pendingText : en)}</div></div>`;
     }
     const zhLine = zh
       ? `<div class="lt-yt-trans">${zh}</div>`
-      : `<div class="lt-yt-trans lt-yt-pending">…</div>`;
+      : `<div class="lt-yt-trans ${pendingClass}">${pendingText}</div>`;
     return `<div class="lt-yt-pair lt-yt-pair-${role}"><div class="lt-yt-origin">${en}</div>${zhLine}</div>`;
   }
 
@@ -702,7 +829,7 @@
     const key = ck(text);
     if (cache.has(key)) {
       const hit = cache.get(key);
-      if (hit && hasCjk(hit)) return hit;
+      if (hit && hasTargetScript(hit)) return hit;
     }
     if (inflight.has(key)) return inflight.get(key);
 
@@ -715,8 +842,9 @@
       })
       .then((out) => {
         const zh = String(out || "").trim();
-        if (isUsableTranslation(zh, text)) cacheSet(key, zh);
-        return isUsableTranslation(zh, text) ? zh : "";
+        if (!isUsableTranslation(zh, text)) throw new Error("empty or invalid translation");
+        cacheSet(key, zh);
+        return zh;
       })
       .finally(() => inflight.delete(key));
 
@@ -725,25 +853,13 @@
   }
 
   function translateViaBg(text) {
-    return new Promise((resolve, reject) => {
-      try {
-        chrome.runtime.sendMessage(
-          { type: "TRANSLATE_ONE", text, targetLang: STATE.targetLang || "zh-CN" },
-          (res) => {
-            if (chrome.runtime.lastError) {
-              reject(new Error(chrome.runtime.lastError.message));
-              return;
-            }
-            if (!res?.ok || !res.translated) {
-              reject(new Error(res?.error || "bg translate empty"));
-              return;
-            }
-            resolve(res.translated);
-          }
-        );
-      } catch (err) {
-        reject(err);
-      }
+    return runtimeMessage(
+      { type: "TRANSLATE_ONE", text, targetLang: STATE.targetLang || "zh-CN" },
+      4500,
+      "translation"
+    ).then((res) => {
+      if (!res?.ok || !res.translated) throw new Error(res?.error || "bg translate empty");
+      return res.translated;
     });
   }
 
@@ -751,6 +867,7 @@
     const uniq = [...new Set(texts.filter(Boolean))];
     const need = uniq.filter((t) => !cache.has(ck(t)) && !inflight.has(ck(t)));
     if (!need.length) return;
+    let lastError = null;
 
     const chunks = [];
     for (let i = 0; i < need.length; i += BATCH_SIZE) chunks.push(need.slice(i, i + BATCH_SIZE));
@@ -765,7 +882,10 @@
             if (isUsableTranslation(out, text)) cacheSet(key, out);
             return isUsableTranslation(out, text) ? out : "";
           })
-          .catch(() => "")
+          .catch((err) => {
+            lastError = err;
+            return "";
+          })
           .finally(() => {
             if (inflight.get(key) === p) inflight.delete(key);
           });
@@ -785,33 +905,59 @@
           const text = missing[cursor++];
           try {
             await translateOne(text);
-          } catch {
-            /* keep the source subtitle visible */
+          } catch (err) {
+            lastError = err;
           }
         }
       })
     );
+
+    const stillMissing = need.filter((text) => !cache.has(ck(text)));
+    const currentMissing = stillMissing.some((text) => pairRelated(STATE.cur, text));
+    if (currentMissing) {
+      setTranslationError(lastError || new Error("translation returned no usable text"));
+    } else if (!stillMissing.length) {
+      clearTranslationError();
+    }
   }
 
   function translateBatchViaBg(texts) {
+    return runtimeMessage(
+      { type: "TRANSLATE_BATCH", texts, targetLang: STATE.targetLang || "zh-CN" },
+      8000,
+      "batch translation"
+    ).then((res) => {
+      if (!res?.ok || !Array.isArray(res.results)) {
+        throw new Error(res?.error || "bg batch translate empty");
+      }
+      return res.results;
+    });
+  }
+
+  function runtimeMessage(message, timeoutMs, label) {
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn(value);
+      };
+      const timer = setTimeout(
+        () => finish(reject, new Error(`${label || "extension message"} timeout`)),
+        timeoutMs
+      );
       try {
-        chrome.runtime.sendMessage(
-          { type: "TRANSLATE_BATCH", texts, targetLang: STATE.targetLang || "zh-CN" },
-          (res) => {
-            if (chrome.runtime.lastError) {
-              reject(new Error(chrome.runtime.lastError.message));
-              return;
-            }
-            if (!res?.ok || !Array.isArray(res.results)) {
-              reject(new Error(res?.error || "bg batch translate empty"));
-              return;
-            }
-            resolve(res.results);
+        chrome.runtime.sendMessage(message, (res) => {
+          const runtimeError = chrome.runtime.lastError;
+          if (runtimeError) {
+            finish(reject, new Error(runtimeError.message));
+            return;
           }
-        );
+          finish(resolve, res);
+        });
       } catch (err) {
-        reject(err);
+        finish(reject, err);
       }
     });
   }
@@ -852,20 +998,9 @@
         })
         .sort((a, b) => b.score - a.score)[0];
     }
-    const fallbacks = ["en", "en-US"].map((lang) => ({
-      lang,
-      baseUrl: `https://www.youtube.com/api/timedtext?v=${encodeURIComponent(videoId)}&lang=${lang}&fmt=json3`
-    }));
-    const checked = await Promise.all(
-      fallbacks.map(async (track) => {
-        try {
-          return (await fetchCues(track.baseUrl)).length ? track : null;
-        } catch {
-          return null;
-        }
-      })
-    );
-    return checked.find(Boolean) || null;
+    // Do not guess unsigned timedtext URLs. Modern YouTube often requires a
+    // player token; wait for the real player track or a captured request.
+    return null;
   }
 
   function captionUrlScore(value) {
@@ -930,18 +1065,9 @@
   }
 
   function fetchTextViaBg(url) {
-    return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage({ type: "FETCH_TEXT", url }, (res) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        if (!res?.ok) {
-          reject(new Error(res?.error || "fetch failed"));
-          return;
-        }
-        resolve(res.text || "");
-      });
+    return runtimeMessage({ type: "FETCH_TEXT", url }, 6000, "caption fetch").then((res) => {
+      if (!res?.ok) throw new Error(res?.error || "fetch failed");
+      return res.text || "";
     });
   }
 

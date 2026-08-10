@@ -53,3 +53,44 @@ test("timed cues stay authoritative and the bridge recovers late injection", () 
   assert.match(bridge, /performance\.getEntriesByType\("resource"\)/);
   assert.match(bridge, /PerformanceObserver/);
 });
+
+test("translation runtime failures are bounded and visible", () => {
+  const runtime = read("youtube-subs.js");
+  assert.match(runtime, /function runtimeMessage/);
+  assert.match(runtime, /translationErrorLabel/);
+  assert.match(runtime, /扩展已更新，请刷新此页面/);
+  assert.match(runtime, /extensionVersion: safeManifestVersion\(\)/);
+});
+
+test("injection requires an exact runtime version and never fakes subtitle success", () => {
+  const background = read("background.js");
+  const popup = read("popup.js");
+  const content = read("content.js");
+  const runtime = read("youtube-subs.js");
+  assert.match(background, /STALE_PAGE_CONTEXT/);
+  assert.match(background, /STALE_YOUTUBE_CONTEXT/);
+  assert.match(popup, /runtime\.runtimeConnected !== true/);
+  assert.doesNotMatch(popup, /softTimeout:\s*true/);
+  assert.match(popup, /message\.type === "YT_SUBS_START"\) throw err/);
+  assert.match(content, /version:\s*CONTENT_VERSION/);
+  assert.doesNotMatch(content, /if \(window\.__LT_LOADED__\) return/);
+  assert.match(content, /__LT_CONTENT_DISPOSE__/);
+  assert.match(content, /removeListener\(onRuntimeMessage\)/);
+  assert.match(runtime, /__LT_YT_MSG_VERSION__ !== SCRIPT_VERSION/);
+  assert.match(runtime, /__LT_YT_MSG_HANDLER__/);
+});
+
+test("the visible subtitle uses a priority request outside future batching", () => {
+  const runtime = read("youtube-subs.js");
+  assert.match(runtime, /requestTranslate\(en, \{ force: true \}\)/);
+  assert.match(runtime, /cueKey\(text\) !== cueKey\(en\)/);
+  assert.doesNotMatch(runtime, /Last resort: current line/);
+});
+
+test("caption-track discovery retries until DOM fallback can upgrade", () => {
+  const runtime = read("youtube-subs.js");
+  assert.match(runtime, /function scheduleTrackRetry/);
+  assert.match(runtime, /Math\.min\(4000/);
+  assert.match(runtime, /if \(!raw\.length\) \{\s*scheduleTrackRetry\(token\)/);
+  assert.doesNotMatch(runtime, /const fallbacks = \["en", "en-US"\]/);
+});

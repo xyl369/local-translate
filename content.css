@@ -225,6 +225,13 @@
   letter-spacing: 0.12em;
 }
 
+#lt-yt-overlay .lt-yt-error {
+  color: #fbbf24;
+  opacity: 0.95;
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
 #lt-yt-overlay .lt-yt-pair-prev {
   opacity: 0.74;
 }

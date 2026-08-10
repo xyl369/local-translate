@@ -18,12 +18,23 @@ const DEFAULT_SETTINGS = {
   engine: "google"
 };
 
+const EXTENSION_VERSION = chrome.runtime.getManifest().version;
+
 const MIGRATED_KEY = "__migratedFromSync";
 const ALLOWED_FETCH_HOSTS = new Set([
   "translate.googleapis.com",
   "www.youtube.com",
   "youtube.com"
 ]);
+
+function markTabNeedsRefresh(tabId, needed) {
+  try {
+    chrome.action.setBadgeBackgroundColor({ tabId, color: "#b45309" })?.catch?.(() => {});
+    chrome.action.setBadgeText({ tabId, text: needed ? "刷新" : "" })?.catch?.(() => {});
+  } catch {
+    /* badge is diagnostic only */
+  }
+}
 
 function migrateSyncToLocal() {
   return new Promise((resolve) => {
@@ -142,9 +153,14 @@ chrome.commands.onCommand.addListener(async (command) => {
 async function ensureTabScript(tabId, tabUrl) {
   let contentReady = false;
   try {
-    await chrome.tabs.sendMessage(tabId, { type: "PING" });
-    contentReady = true;
-  } catch {
+    const pong = await chrome.tabs.sendMessage(tabId, { type: "PING" });
+    if (pong?.ok && pong.version !== EXTENSION_VERSION) {
+      markTabNeedsRefresh(tabId, true);
+      throw new Error(`STALE_PAGE_CONTEXT:${pong.version || "legacy"}:${EXTENSION_VERSION}`);
+    }
+    contentReady = pong?.version === EXTENSION_VERSION;
+  } catch (err) {
+    if (/STALE_PAGE_CONTEXT/.test(String(err?.message || err))) throw err;
     /* inject below */
   }
   if (!contentReady) {
@@ -154,14 +170,36 @@ async function ensureTabScript(tabId, tabUrl) {
       /* ignore */
     }
     await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+    await sleep(40);
+    let pong;
+    try {
+      pong = await chrome.tabs.sendMessage(tabId, { type: "PING" });
+    } catch (err) {
+      markTabNeedsRefresh(tabId, true);
+      throw err;
+    }
+    if (pong?.version !== EXTENSION_VERSION) {
+      markTabNeedsRefresh(tabId, true);
+      throw new Error(`CONTENT_INJECTION_FAILED:${pong?.version || "missing"}`);
+    }
   }
 
   const url = tabUrl || (await chrome.tabs.get(tabId).then((t) => t.url).catch(() => ""));
   if (/youtube\.com|youtu\.be/i.test(url || "")) {
     try {
-      await chrome.tabs.sendMessage(tabId, { type: "YT_SUBS_STATUS" });
-      return;
-    } catch {
+      const status = await chrome.tabs.sendMessage(tabId, { type: "YT_SUBS_STATUS" });
+      if (status?.extensionVersion === EXTENSION_VERSION) {
+        markTabNeedsRefresh(tabId, false);
+        return;
+      }
+      if (status?.ok) {
+        markTabNeedsRefresh(tabId, true);
+        throw new Error(
+          `STALE_YOUTUBE_CONTEXT:${status.extensionVersion || "legacy"}:${EXTENSION_VERSION}`
+        );
+      }
+    } catch (err) {
+      if (/STALE_YOUTUBE_CONTEXT/.test(String(err?.message || err))) throw err;
       /* inject YouTube modules below */
     }
     try {
@@ -173,15 +211,26 @@ async function ensureTabScript(tabId, tabUrl) {
     } catch {
       /* ignore */
     }
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["youtube-subs-core.js", "youtube-subs.js"]
+    });
+    await sleep(40);
+    let injectedStatus;
     try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ["youtube-subs-core.js", "youtube-subs.js"]
-      });
-    } catch {
-      /* ignore */
+      injectedStatus = await chrome.tabs.sendMessage(tabId, { type: "YT_SUBS_STATUS" });
+    } catch (err) {
+      markTabNeedsRefresh(tabId, true);
+      throw err;
+    }
+    if (injectedStatus?.extensionVersion !== EXTENSION_VERSION) {
+      markTabNeedsRefresh(tabId, true);
+      throw new Error(
+        `YOUTUBE_INJECTION_FAILED:${injectedStatus?.extensionVersion || "missing"}`
+      );
     }
   }
+  markTabNeedsRefresh(tabId, false);
 }
 
 /** Auto-inject only for auto-translate / YouTube auto-subs. */
@@ -203,23 +252,38 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
       try {
         await ensureTabScript(tabId, tab.url);
         if (isYt && s.videoSubsAuto) {
-          await chrome.tabs.sendMessage(tabId, {
+          const result = await chrome.tabs.sendMessage(tabId, {
             type: "YT_SUBS_START",
             targetLang: s.targetLang,
             mode: s.videoSubsMode || s.displayMode
-          }).catch(() => {});
+          });
+          if (!result?.ok) markTabNeedsRefresh(tabId, true);
         }
         if (s.autoTranslate && !isYt) {
           await chrome.tabs.sendMessage(tabId, { type: "TRANSLATE_PAGE" }).catch(() => {});
         }
       } catch {
-        /* ignore */
+        if (isYt) markTabNeedsRefresh(tabId, true);
       }
     }
   });
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.type === "RUNTIME_HEALTH") {
+    getSettings()
+      .then((settings) =>
+        sendResponse({
+          ok: true,
+          version: EXTENSION_VERSION,
+          engine: settings.engine,
+          targetLang: settings.targetLang,
+          settings
+        })
+      )
+      .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
+    return true;
+  }
   if (message.type === "GET_SETTINGS") {
     getSettings().then((settings) => sendResponse({ ok: true, settings }));
     return true;
@@ -294,9 +358,24 @@ async function fetchAllowedText(url) {
     throw new Error("Host not allowed: " + u.hostname);
   }
   if (u.protocol !== "https:") throw new Error("HTTPS only");
-  const res = await fetch(u.toString());
+  const res = await fetchWithTimeout(u.toString(), {}, 6500);
   if (!res.ok) throw new Error("HTTP " + res.status);
-  return await res.text();
+  const text = await res.text();
+  if (text.length > 4_000_000) throw new Error("Caption response too large");
+  return text;
+}
+
+async function fetchWithTimeout(input, init = {}, timeoutMs = 6500) {
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = setTimeout(() => controller?.abort(), timeoutMs);
+  try {
+    return await fetch(input, controller ? { ...init, signal: controller.signal } : init);
+  } catch (err) {
+    if (controller?.signal.aborted) throw new Error(`Network timeout after ${timeoutMs}ms`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const MARK = (i) => `\n\n[[LT${i}]]\n\n`;
@@ -445,7 +524,7 @@ async function callGoogle(text, targetLang, retries = 2) {
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const res = await fetch(url);
+      const res = await fetchWithTimeout(url, {}, 4500);
       if (!res.ok) {
         if (attempt < retries && (res.status === 429 || res.status >= 500)) {
           await sleep(200 * (attempt + 1));

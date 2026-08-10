@@ -1,5 +1,15 @@
 # Changelog
 
+## [3.9.1] — local validation build
+
+- Reject mixed old-page/new-background runtimes with exact version handshakes and a visible refresh badge
+- Replace stale content controllers cleanly; verify every content/YouTube injection before reporting success
+- Remove the popup's fake subtitle success path and validate the live runtime after startup
+- Give the visible cue a priority translation lane; batch only future cues and never attach a late result to the wrong line
+- Retry real YouTube caption-track discovery until DOM fallback can upgrade, without guessing unsigned URLs
+- Bound runtime and network calls with explicit timeouts and show actionable translation errors in the overlay
+- Add six real-browser lifecycle/subtitle scenarios plus unit, network-boundary, privacy, and package checks
+
 ## [3.9.0] — 2026-08-10
 
 ### Stable YouTube subtitle rhythm

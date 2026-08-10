@@ -1,0 +1,13 @@
+{
+  "name": "local-translate",
+  "version": "3.9.1",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:e2e": "node tests/youtube-runtime.e2e.cjs",
+    "verify": "npm test && npm run test:e2e"
+  },
+  "devDependencies": {
+    "playwright-core": "1.62.0"
+  }
+}
