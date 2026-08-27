@@ -16,7 +16,7 @@ No analytics · no account system · no China-vendor SDKs · settings stay on-de
 |------|--------|
 | Avoid **China-company** analytics / account upload / vendor SDKs | **Yes** — no such endpoints in source |
 | Keep extension settings on **this browser only** | **Yes** (v3.6+) — `chrome.storage.local` only; not Google Sync |
-| Pure offline / no text leaves the machine | **Optional** — choose **Chrome on-device** engine (newer Chrome). Default **Google gtx** still sends text to Google |
+| Pure offline / no text leaves the machine | **Optional** — choose **Chrome on-device** engine (newer Chrome). Default **Google Translate** still sends text to Google |
 | Local LLM / Ollama | **Not included** — too heavy for typical laptops; not part of this project |
 
 **Engines (v3.7+)**
@@ -30,7 +30,7 @@ No analytics · no account system · no China-vendor SDKs · settings stay on-de
 
 | Data | Destination |
 |------|-------------|
-| Text you ask to translate | `https://translate.googleapis.com/...` (`client=gtx`) |
+| Text you ask to translate | Google Translate web endpoints (`translate-pa`, `clients5`, `gtx`) |
 | YouTube caption track / `tlang` | `https://www.youtube.com/api/timedtext?...` |
 | Browsing history / full page dumps | **Not uploaded** |
 | Settings / blocklist | **Device only** (`chrome.storage.local`) |
@@ -56,7 +56,7 @@ A lightweight Chromium extension that provides:
 3. **Site blocklist** — Never translate specified domains
 4. **Hotkey** — `Alt+A` to toggle translation / restore original
 
-Uses the **Google Translate public API** (`client=gtx`) by default. Optional **Chrome on-device** engine for pages where you do not want text to leave the machine. No backend you must trust, no account system, no analytics, **no local LLM**.
+Uses **Google Translate web endpoints** by default (same family as [Translate Web Pages](https://github.com/FilipePS/Traduzir-paginas-web): `translate-pa` batch, then `clients5`, then `gtx`). Optional **Chrome on-device** engine for pages where you do not want text to leave the machine. No backend you must trust, no account system, no analytics, **no local LLM**.
 
 ### Features
 
@@ -67,7 +67,7 @@ Uses the **Google Translate public API** (`client=gtx`) by default. Optional **C
 | Bilingual / translation-only | Switchable display mode |
 | Translation style | Muted / underline / left color bar |
 | Skip code + site chrome | `<code>` / `<pre>`; skip nav/header/footer/aside |
-| Retry failed blocks | Click **Retry translate** |
+| Retry failed blocks | Silent retry, then click **Retry translate** / **重试翻译** |
 | Context menu | Translate selection / bilingual page |
 | YouTube subtitles | Cue-first dual-line; stable sentence units, time-aligned `tlang`, batched prefetch |
 | Site blocklist | Per-domain never-translate |
@@ -99,7 +99,9 @@ git clone https://github.com/xyl369/local-translate.git
 | `activeTab` | Inject into the active tab |
 | `scripting` | Hotkey / context-menu reinject |
 | `contextMenus` | Right-click translate |
-| `https://translate.googleapis.com/*` | Google Translate |
+| `https://translate.googleapis.com/*` | Google Translate key + gtx fallback |
+| `https://translate-pa.googleapis.com/*` | Google Translate batch (TWP-style) |
+| `https://clients5.google.com/*` | Google Translate fallback when gtx is rate-limited |
 | `http(s)://*/*` | Inject bilingual UI; YouTube subs |
 
 ### Project structure
@@ -109,6 +111,7 @@ local-translate/
 ├── manifest.json
 ├── background.js         # Engines + allowlisted fetch
 ├── offscreen.html/.js    # Chrome on-device Translator
+├── page-core.js          # Paragraph grain + stable token protect
 ├── content.js / content.css
 ├── youtube-bridge.js     # MAIN-world timedtext sniffer
 ├── youtube-subs-core.js  # Pure cue alignment / prefetch helpers
@@ -158,7 +161,7 @@ Keep it auditable and light: **no analytics, no China-vendor SDKs, no cloud acco
 3. **站点屏蔽**  
 4. **快捷键** `Alt+A`
 
-翻译走 **Google Translate 公开接口**（`client=gtx`）。无自建后端、无账号、无埋点。
+翻译走 **Google Translate 网页接口**（优先 `translate-pa` 批量，其次 `clients5`，最后 `gtx`）。无自建后端、无账号、无埋点。
 
 > 「Local」= 扩展在浏览器内跑、设置在本机；默认翻译会发往 Google，除非改选 Chrome 端侧。
 > 本项目**不包含**本地大模型（Ollama 等）。
@@ -193,7 +196,9 @@ YouTube 节奏采用确定性规则：真实字幕时间轴优先，ASR 碎片�
 |------|------|
 | `storage` | 语言、样式、黑名单（**仅本机**） |
 | `activeTab` / `scripting` / `contextMenus` | 注入与右键 |
-| `https://translate.googleapis.com/*` | 翻译请求 |
+| `https://translate.googleapis.com/*` | 翻译密钥与 gtx 回退 |
+| `https://translate-pa.googleapis.com/*` | Google 批量翻译 |
+| `https://clients5.google.com/*` | gtx 被限流时的回退 |
 | `http(s)://*/*` | 页面注入与 YouTube 字幕 |
 
 ### 免责声明

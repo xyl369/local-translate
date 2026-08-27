@@ -330,6 +330,7 @@ async function main() {
     window.chrome = { runtime };
   });
   await lifecycle.goto("data:text/html,<main><p>Lifecycle test</p></main>");
+  await lifecycle.addScriptTag({ path: path.join(ROOT, "page-core.js") });
   await lifecycle.addScriptTag({ path: path.join(ROOT, "content.js") });
   await lifecycle.waitForFunction(() => window.__contentListenerCount() === 1);
   assert.equal(

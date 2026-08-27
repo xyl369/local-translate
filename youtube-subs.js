@@ -924,7 +924,7 @@
   function translateBatchViaBg(texts) {
     return runtimeMessage(
       { type: "TRANSLATE_BATCH", texts, targetLang: STATE.targetLang || "zh-CN" },
-      8000,
+      20000,
       "batch translation"
     ).then((res) => {
       if (!res?.ok || !Array.isArray(res.results)) {

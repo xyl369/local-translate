@@ -1,5 +1,35 @@
 # Changelog
 
+## [3.10.2] — 2026-08-27
+
+### Paragraph grain (inline links / model ids)
+
+- Sentences that contain a link (`Interactions API`, `Live API`) were split: the `<a>` became the host, `hasTranslatableElementChild` skipped the paragraph, so only the link was translated
+- Inline `<code>` model ids were skipped entirely, which produced `预录音频处理 ()`
+- Host at the enclosing paragraph; protect `gemini-3.5-transcribe`-style tokens and restore empty `()`
+
+## [3.10.1] — 2026-08-27
+
+### Bilingual UI (Immersive Translate / 灰度跟随)
+
+- Stop painting a light-theme grey (`#5b6b7c`) onto dark HTML mail; translation inherits `currentColor` at reduced opacity
+- Stop treating SPAN/TD/FONT as compact chrome — headings stack as a pair instead of `Title · 译文 (model-id)`
+- Drop the middot prefix and `white-space: nowrap`; failed retry is a quiet inherited link, not an orange pill
+
+## [3.10.0] — 2026-08-27
+
+### Fix: page translation Retry-storm (Gmail and other dense pages)
+
+- Google `gtx` was rate-limited (HTTP 429). Failed blocks were cached as empty and shown as **Retry translate** immediately, then a parallel fallback stampeded more 429s
+- Switch the Google engine to the Translate Web Pages pattern: `translate-pa` list batch first, then `clients5`, then `gtx` POST. Never cache empty results
+- Queue Google calls (concurrency 2), split failed groups in half instead of firing N parallel requests
+- Retry failed page blocks silently before showing a control; Gmail skips chrome and listens to the nested mail scroller
+- Do not drop a second translate pass while the first is still running (SPA/hash mail views)
+
+### Privacy
+
+- Still Google-only for the default engine: `translate.googleapis.com`, `translate-pa.googleapis.com`, `clients5.google.com`
+
 ## [3.9.1] — local validation build
 
 - Reject mixed old-page/new-background runtimes with exact version handshakes and a visible refresh badge

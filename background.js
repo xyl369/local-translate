@@ -1,7 +1,7 @@
 /**
  * Translation service worker.
- * Default engine: Google gtx (free, best UX). Optional: Chrome on-device Translator (no big model).
- * Settings: chrome.storage.local only. All outbound translate/fetch goes through here.
+ * Default engine: Google Translate (free). Optional: Chrome on-device Translator (no big model).
+ * Google path: translate-pa list batch, clients5 fallback, then gtx POST.
  */
 
 const DEFAULT_SETTINGS = {
@@ -23,9 +23,15 @@ const EXTENSION_VERSION = chrome.runtime.getManifest().version;
 const MIGRATED_KEY = "__migratedFromSync";
 const ALLOWED_FETCH_HOSTS = new Set([
   "translate.googleapis.com",
+  "translate-pa.googleapis.com",
+  "clients5.google.com",
   "www.youtube.com",
   "youtube.com"
 ]);
+
+/** Public Translate Web Pages JS used only to read Google's web client API key. */
+const GOOGLE_PA_JS =
+  "https://translate.googleapis.com/_/translate_http/_/js/k=translate_http.tr.en_US.YusFYy3P_ro.O/am=AAg/d=1/exm=el_conf/ed=1/rs=AN8SPfq1Hb8iJRleQqQc8zhdzXmF9E56eQ/m=el_main";
 
 function markTabNeedsRefresh(tabId, needed) {
   try {
@@ -99,7 +105,9 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-migrateSyncToLocal();
+migrateSyncToLocal().then(() => {
+  getGooglePaKey().catch(() => {});
+});
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!tab?.id) return;
@@ -169,7 +177,7 @@ async function ensureTabScript(tabId, tabUrl) {
     } catch {
       /* ignore */
     }
-    await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["page-core.js", "content.js"] });
     await sleep(40);
     let pong;
     try {
@@ -378,8 +386,268 @@ async function fetchWithTimeout(input, init = {}, timeoutMs = 6500) {
   }
 }
 
-const MARK = (i) => `\n\n[[LT${i}]]\n\n`;
-const MARK_SPLIT = /\[\[[\s]*LT[\s]*\d+[\s]*\]\]/i;
+const GOOGLE_GROUP_CHARS = 1800;
+const GOOGLE_GROUP_ITEMS = 24;
+
+function escapeHtml(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function unescapeHtml(text) {
+  return String(text || "")
+    .replace(/&quot;/g, '"')
+    .replace(/&gt;/g, ">")
+    .replace(/&lt;/g, "<")
+    .replace(/&amp;/g, "&");
+}
+
+function wrapIndexedHtml(texts) {
+  const inner = (Array.isArray(texts) ? texts : [])
+    .map((text, i) => `<a i=${i}>${escapeHtml(text)}</a>`)
+    .join("");
+  return `<pre>${inner}</pre>`;
+}
+
+function unwrapIndexedHtml(html, count) {
+  const out = Array.from({ length: count }, () => "");
+  const re = /<a\s+i\s*=\s*"?(\d+)"?\s*>([\s\S]*?)<\/a>/gi;
+  let found = 0;
+  let match;
+  while ((match = re.exec(String(html || "")))) {
+    const idx = Number(match[1]);
+    if (idx >= 0 && idx < count) {
+      out[idx] += unescapeHtml(match[2] || "");
+      found += 1;
+    }
+  }
+  if (found < count) return null;
+  return out.map((s) => s.replace(/\s+/g, " ").trim());
+}
+
+function parsePaList(data, count) {
+  if (!Array.isArray(data) || !Array.isArray(data[0])) return null;
+  const list = data[0];
+  if (list.length === 1 && count > 1 && /<a\s+i\s*=/i.test(String(list[0] || ""))) {
+    return unwrapIndexedHtml(String(list[0]), count);
+  }
+  if (list.length < count) return null;
+  return list.slice(0, count).map((s) => String(s || "").replace(/\s+/g, " ").trim());
+}
+
+function parseClients5List(data, count) {
+  if (!Array.isArray(data) || !data.length) return null;
+  const out = data.map((row) => (Array.isArray(row) ? String(row[0] || "") : String(row || "")));
+  if (out.length === 1 && count > 1 && /<a\s+i\s*=/i.test(out[0])) {
+    return unwrapIndexedHtml(out[0], count);
+  }
+  if (out.length < count) return null;
+  return out.slice(0, count).map((s) => s.replace(/\s+/g, " ").trim());
+}
+
+function parseGtxSingle(data) {
+  if (!Array.isArray(data) || !Array.isArray(data[0])) return "";
+  return data[0].map((seg) => (seg && seg[0]) || "").join("");
+}
+
+function isLimitStatus(status) {
+  return status === 429 || status === 403 || status === 503;
+}
+
+function createLimiter(concurrency, minInterval) {
+  let active = 0;
+  let lastAt = 0;
+  const waiters = [];
+  async function acquire() {
+    while (active >= concurrency) {
+      await new Promise((resolve) => waiters.push(resolve));
+    }
+    const wait = lastAt + minInterval - Date.now();
+    if (wait > 0) await sleep(wait);
+    active += 1;
+    lastAt = Date.now();
+  }
+  function release() {
+    active = Math.max(0, active - 1);
+    const next = waiters.shift();
+    if (next) next();
+  }
+  return {
+    async run(fn) {
+      await acquire();
+      try {
+        return await fn();
+      } finally {
+        release();
+      }
+    }
+  };
+}
+
+const googleLimiter = createLimiter(2, 80);
+let googlePaKey = { value: "", at: 0 };
+let googlePaKeyPromise = null;
+let googleBackoffUntil = 0;
+
+async function waitGoogleBackoff() {
+  const wait = googleBackoffUntil - Date.now();
+  if (wait > 0) await sleep(Math.min(wait, 8000));
+}
+
+function noteGoogleLimit(retryAfterHeader) {
+  const parsed = Number(retryAfterHeader);
+  const extra = Number.isFinite(parsed) && parsed >= 0 ? parsed * 1000 : 1000;
+  googleBackoffUntil = Date.now() + Math.min(8000, extra);
+}
+
+async function getGooglePaKey() {
+  if (googlePaKey.value && Date.now() - googlePaKey.at < 20 * 60 * 1000) {
+    return googlePaKey.value;
+  }
+  if (googlePaKeyPromise) return googlePaKeyPromise;
+  googlePaKeyPromise = (async () => {
+    const res = await fetchWithTimeout(GOOGLE_PA_JS, {}, 5000);
+    if (!res.ok) throw new Error(`Google key HTTP ${res.status}`);
+    const text = await res.text();
+    const named = text.match(/['"]x-goog-api-key['"]\s*:\s*['"]([A-Za-z0-9_-]{20,})['"]/i);
+    const loose = text.match(/AIza[0-9A-Za-z_-]{30,}/);
+    const key = (named && named[1]) || (loose && loose[0]) || "";
+    if (!key) throw new Error("Google web client key missing");
+    googlePaKey = { value: key, at: Date.now() };
+    return key;
+  })().finally(() => {
+    googlePaKeyPromise = null;
+  });
+  return googlePaKeyPromise;
+}
+
+function rememberGoogleResult(text, lang, engine, translated) {
+  const value = String(translated || "").trim();
+  if (!value) return "";
+  cacheSet(text, lang, engine, value);
+  return value;
+}
+
+async function readJsonResponse(res, label) {
+  if (isLimitStatus(res.status)) {
+    noteGoogleLimit(res.headers?.get?.("Retry-After"));
+    throw new Error(`${label} HTTP ${res.status}`);
+  }
+  if (!res.ok) throw new Error(`${label} HTTP ${res.status}`);
+  return res.json();
+}
+
+async function callTranslatePa(texts, targetLang) {
+  const key = await getGooglePaKey();
+  await waitGoogleBackoff();
+  return googleLimiter.run(async () => {
+    const body = JSON.stringify([[texts, "auto", targetLang || "zh-CN"], "te"]);
+    const res = await fetchWithTimeout(
+      "https://translate-pa.googleapis.com/v1/translateHtml",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json+protobuf",
+          "X-goog-api-key": key
+        },
+        body
+      },
+      8000
+    );
+    const data = await readJsonResponse(res, "translate-pa");
+    const parsed = parsePaList(data, texts.length);
+    if (!parsed || !parsed.some(Boolean)) throw new Error("translate-pa parse mismatch");
+    return parsed;
+  });
+}
+
+async function callClients5(texts, targetLang) {
+  await waitGoogleBackoff();
+  return googleLimiter.run(async () => {
+    const tl = encodeURIComponent(targetLang || "zh-CN");
+    const body = texts.map((text) => `q=${encodeURIComponent(text)}`).join("&");
+    const res = await fetchWithTimeout(
+      `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${tl}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+        body
+      },
+      8000
+    );
+    const data = await readJsonResponse(res, "clients5");
+    const parsed = parseClients5List(data, texts.length);
+    if (!parsed || !parsed.some(Boolean)) throw new Error("clients5 parse mismatch");
+    return parsed;
+  });
+}
+
+async function callGtx(text, targetLang, retries = 2) {
+  const tl = encodeURIComponent(targetLang || "zh-CN");
+  const body = `q=${encodeURIComponent(text)}`;
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${tl}&dt=t`;
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      await waitGoogleBackoff();
+      const data = await googleLimiter.run(async () => {
+        const res = await fetchWithTimeout(
+          url,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+            body
+          },
+          8000
+        );
+        return readJsonResponse(res, "gtx");
+      });
+      return parseGtxSingle(data);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) await sleep(400 * 2 ** attempt);
+    }
+  }
+  throw lastErr || new Error("gtx failed");
+}
+
+async function callGoogleMany(texts, targetLang) {
+  const list = (Array.isArray(texts) ? texts : []).map((text) => String(text || "").trim());
+  if (!list.length) return [];
+  if (list.length === 1) return [await callGoogle(list[0], targetLang)];
+  try {
+    return await callTranslatePa(list, targetLang);
+  } catch {
+    /* next endpoint */
+  }
+  try {
+    return await callClients5(list, targetLang);
+  } catch {
+    /* next endpoint */
+  }
+  throw new Error("google batch endpoints failed");
+}
+
+async function callGoogle(text, targetLang) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return "";
+  try {
+    const [one] = await callTranslatePa([trimmed], targetLang);
+    if (one) return one;
+  } catch {
+    /* next endpoint */
+  }
+  try {
+    const [one] = await callClients5([trimmed], targetLang);
+    if (one) return one;
+  } catch {
+    /* next endpoint */
+  }
+  return callGtx(trimmed, targetLang);
+}
 
 async function translateBatch(texts, targetLang) {
   const settings = await getSettings();
@@ -395,7 +663,7 @@ async function translateBatch(texts, targetLang) {
     const text = String(list[i] || "").trim();
     if (!text) continue;
     const hit = cacheGet(text, lang, engine);
-    if (hit !== undefined) results[i] = hit;
+    if (hit) results[i] = hit;
     else uncached.push({ index: i, text });
   }
   if (!uncached.length) return results;
@@ -404,8 +672,7 @@ async function translateBatch(texts, targetLang) {
     for (const item of uncached) {
       try {
         const translated = await callChrome(item.text, lang);
-        results[item.index] = translated;
-        if (translated) cacheSet(item.text, lang, engine, translated);
+        results[item.index] = rememberGoogleResult(item.text, lang, engine, translated);
       } catch {
         results[item.index] = "";
       }
@@ -413,13 +680,15 @@ async function translateBatch(texts, targetLang) {
     return results;
   }
 
-  const MAX_CHARS = 4200;
   const groups = [];
   let currentGroup = [];
   let currentLen = 0;
   for (const item of uncached) {
-    const addLen = item.text.length + 16;
-    if (currentLen + addLen > MAX_CHARS && currentGroup.length > 0) {
+    const addLen = item.text.length + 8;
+    if (
+      currentGroup.length &&
+      (currentGroup.length >= GOOGLE_GROUP_ITEMS || currentLen + addLen > GOOGLE_GROUP_CHARS)
+    ) {
       groups.push(currentGroup);
       currentGroup = [];
       currentLen = 0;
@@ -429,59 +698,58 @@ async function translateBatch(texts, targetLang) {
   }
   if (currentGroup.length) groups.push(currentGroup);
 
-  const CONCURRENCY = 6;
-  let cursor = 0;
-
-  async function translateGroup(group) {
-    if (group.length === 1) {
+  async function fillGroup(group) {
+    if (!group.length) return;
+    const pending = group.filter((item) => !results[item.index]);
+    if (!pending.length) return;
+    if (pending.length === 1) {
       try {
-        const translated = await callGoogle(group[0].text, lang);
-        results[group[0].index] = translated;
-        cacheSet(group[0].text, lang, "google", translated);
+        results[pending[0].index] = rememberGoogleResult(
+          pending[0].text,
+          lang,
+          "google",
+          await callGoogle(pending[0].text, lang)
+        );
       } catch {
-        results[group[0].index] = "";
+        results[pending[0].index] = "";
       }
       return;
     }
-    const merged = group.map((item, j) => `${item.text}${MARK(j)}`).join("");
     try {
-      const translatedMerged = await callGoogle(merged, lang);
-      const parts = translatedMerged.split(MARK_SPLIT).map((s) => s.trim());
-      while (parts.length && !parts[parts.length - 1]) parts.pop();
-      if (parts.length >= group.length) {
-        for (let j = 0; j < group.length; j++) {
-          const translated = (parts[j] || "").trim();
-          results[group[j].index] = translated;
-          if (translated) cacheSet(group[j].text, lang, "google", translated);
+      const parts = await callGoogleMany(
+        pending.map((item) => item.text),
+        lang
+      );
+      if (Array.isArray(parts) && parts.length >= pending.length) {
+        for (let j = 0; j < pending.length; j++) {
+          results[pending[j].index] = rememberGoogleResult(
+            pending[j].text,
+            lang,
+            "google",
+            parts[j]
+          );
         }
         return;
       }
     } catch {
-      /* fall through */
+      /* split missing items instead of stampeding */
     }
-    await Promise.all(
-      group.map(async (item) => {
-        try {
-          const translated = await callGoogle(item.text, lang);
-          results[item.index] = translated;
-          cacheSet(item.text, lang, "google", translated);
-        } catch {
-          results[item.index] = "";
-        }
-      })
-    );
+    const missing = pending.filter((item) => !results[item.index]);
+    if (!missing.length) return;
+    const mid = Math.ceil(missing.length / 2);
+    await fillGroup(missing.slice(0, mid));
+    await fillGroup(missing.slice(mid));
   }
 
-  async function groupWorker() {
-    while (cursor < groups.length) {
-      const gi = cursor++;
-      if (gi >= groups.length) break;
-      await translateGroup(groups[gi]);
-    }
-  }
-
+  let cursor = 0;
+  const workers = Math.min(2, groups.length);
   await Promise.all(
-    Array.from({ length: Math.min(CONCURRENCY, groups.length) }, () => groupWorker())
+    Array.from({ length: workers }, async () => {
+      while (cursor < groups.length) {
+        const gi = cursor++;
+        if (gi < groups.length) await fillGroup(groups[gi]);
+      }
+    })
   );
   return results;
 }
@@ -496,7 +764,7 @@ async function translateText(text, targetLang) {
     requestedEngine === "chrome" && (await chromeTranslatorAvailable()) ? "chrome" : "google";
 
   const hit = cacheGet(trimmed, lang, engine);
-  if (hit !== undefined) return hit;
+  if (hit) return hit;
 
   let result = "";
   if (engine === "chrome") {
@@ -513,37 +781,7 @@ async function translateText(text, targetLang) {
     }
   }
 
-  cacheSet(trimmed, lang, engine, result);
-  return result;
-}
-
-async function callGoogle(text, targetLang, retries = 2) {
-  const tl = encodeURIComponent(targetLang || "zh-CN");
-  const q = encodeURIComponent(text);
-  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${tl}&dt=t&q=${q}`;
-
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const res = await fetchWithTimeout(url, {}, 4500);
-      if (!res.ok) {
-        if (attempt < retries && (res.status === 429 || res.status >= 500)) {
-          await sleep(200 * (attempt + 1));
-          continue;
-        }
-        throw new Error(`Translation request failed HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      if (!Array.isArray(data) || !Array.isArray(data[0])) return "";
-      return data[0].map((seg) => (seg && seg[0]) || "").join("");
-    } catch (err) {
-      if (attempt < retries) {
-        await sleep(150 * (attempt + 1));
-        continue;
-      }
-      throw err;
-    }
-  }
-  return "";
+  return rememberGoogleResult(trimmed, lang, engine, result);
 }
 
 /** Map UI lang codes → Chrome Translator BCP-47 tags. */

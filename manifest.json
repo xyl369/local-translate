@@ -1,11 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Local Translate",
-  "version": "3.9.1",
-  "description": "Auditable bilingual translate + YouTube dual subs. Default Google gtx; optional Chrome on-device. No analytics, no local LLM.",
+  "version": "3.10.2",
+  "description": "Auditable bilingual translate + YouTube dual subs. Google translate-pa batch; optional Chrome on-device. No analytics, no local LLM.",
   "permissions": ["storage", "activeTab", "scripting", "contextMenus", "offscreen", "tabs"],
   "host_permissions": [
     "https://translate.googleapis.com/*",
+    "https://translate-pa.googleapis.com/*",
+    "https://clients5.google.com/*",
     "https://www.youtube.com/*",
     "https://youtube.com/*",
     "http://*/*",

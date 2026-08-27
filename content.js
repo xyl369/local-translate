@@ -21,11 +21,7 @@
     "NOSCRIPT",
     "TEXTAREA",
     "INPUT",
-    // Translate SELECT/OPTION visible labels; no longer skip the whole tag
-    "CODE",
     "PRE",
-    "KBD",
-    "SAMP",
     "SVG",
     "MATH",
     "CANVAS",
@@ -33,6 +29,8 @@
     "VIDEO",
     "AUDIO"
   ]);
+
+  const PAGE = window.__LT_PAGE_CORE__ || {};
 
   // Inline tags (do not break onto their own line)
   const INLINE_TAGS = new Set([
@@ -56,7 +54,14 @@
     "SUP",
     "TIME",
     "U",
-    "VAR"
+    "VAR",
+    "FONT",
+    "CENTER",
+    "BIG",
+    "TT",
+    "CODE",
+    "KBD",
+    "SAMP"
   ]);
 
   // Semantic block tags — preferred translation hosts
@@ -87,6 +92,33 @@
   const UI_LABEL_RE =
     /^(other models|on-demand usage|invoices?|type|tokens?|cost|qty|quantity|total|subtotal|date|description|status|amount|invoice|view|paid|void|cycle starting|usage|billing|included|on-demand)$/i;
 
+  const SITE_PROFILES = [
+    {
+      test: (host) => /(?:^|\.)mail\.google\.com$/i.test(host),
+      bootMs: 900,
+      skipClosest: [
+        "[role='navigation']",
+        "[role='banner']",
+        "[role='toolbar']",
+        "[role='menubar']",
+        "[role='complementary']",
+        "[gh='cm']",
+        ".aeN",
+        ".G-atb",
+        ".gb_E",
+        ".gb_A",
+        ".aJ"
+      ],
+      scrollRoots: [".Tm.aeJ", "div[role='main']", ".AO", ".bGI"]
+    },
+    {
+      test: (host) => /(?:^|\.)outlook\.live\.com$/i.test(host),
+      bootMs: 700,
+      skipClosest: ["[role='navigation']", "[role='banner']", "[role='toolbar']", "#RibbonRoot"],
+      scrollRoots: ["[role='main']", ".customScrollBar"]
+    }
+  ];
+
   let translating = false;
   let translated = false;
   let settings = null;
@@ -100,6 +132,10 @@
   let spaSchedule = null;
   let spaClickHandler = null;
   const historyHooks = new Map();
+  let pendingRetranslate = false;
+  let failedSweepTimer = null;
+  let siteScrollBound = new WeakSet();
+  const boundScrollers = [];
 
   const onRuntimeMessage = (message, _sender, sendResponse) => {
     if (String(message?.type || "").startsWith("OFFSCREEN_")) return;
@@ -173,8 +209,28 @@
     if (isHostBlocked(settings)) return;
     if (settings.autoTranslate || isEnabled()) {
       setEnabled(true);
-      setTimeout(() => startTranslate({ force: false }).catch(() => {}), 200);
+      const bootMs = currentSiteProfile()?.bootMs || 200;
+      setTimeout(() => startTranslate({ force: false }).catch(() => {}), bootMs);
     }
+  }
+
+  function currentSiteProfile() {
+    const host = location.hostname || "";
+    return SITE_PROFILES.find((profile) => profile.test(host)) || null;
+  }
+
+  function isSiteChrome(el) {
+    const profile = currentSiteProfile();
+    if (!el || !profile?.skipClosest?.length) return false;
+    try {
+      return profile.skipClosest.some((sel) => el.closest?.(sel));
+    } catch {
+      return false;
+    }
+  }
+
+  function retryLabel() {
+    return String(settings?.targetLang || "").startsWith("zh") ? "重试翻译" : "Retry translate";
   }
 
   function isHostBlocked(s) {
@@ -206,7 +262,7 @@
   }
 
   function sendMsg(payload) {
-    const timeout = payload?.type === "TRANSLATE_BATCH" ? 15000 : 5000;
+    const timeout = payload?.type === "TRANSLATE_BATCH" ? 40000 : 8000;
     return runtimeMessage(payload, timeout, payload?.type || "extension message");
   }
 
@@ -282,7 +338,10 @@
 
   async function startTranslate(opts = {}) {
     if (disposed) return { count: 0, disposed: true };
-    if (translating) return { count: 0 };
+    if (translating) {
+      pendingRetranslate = true;
+      return { count: 0, queued: true };
+    }
     settings = await getSettings();
     if (disposed) return { count: 0, disposed: true };
     if (isHostBlocked(settings)) {
@@ -293,6 +352,7 @@
     translating = true;
     applyStyleClasses();
     setEnabled(true);
+    if (opts.force) clearFailedStubs();
 
     // Start video subs immediately; don't await heavy logic
     if (
@@ -336,26 +396,42 @@
     } finally {
       translating = false;
       hideProgress();
+      if (pendingRetranslate && !disposed) {
+        pendingRetranslate = false;
+        queueMicrotask(() => startTranslate({ force: false }).catch(() => {}));
+      }
     }
   }
 
-  async function translateUnitList(units) {
+  async function translateUnitList(units, retries = 2) {
     if (!units.length) return 0;
     let injected = 0;
-    const BATCH = 20;
+    const failed = [];
+    const BATCH = 24;
     for (let i = 0; i < units.length; i += BATCH) {
       const slice = units.slice(i, i + BATCH);
-      const res = await sendMsg({
-        type: "TRANSLATE_BATCH",
-        texts: slice.map((u) => u.text),
-        targetLang: settings.targetLang
-      });
+      const packed = slice.map((unit) =>
+        PAGE.protectStableTokens ? PAGE.protectStableTokens(unit.text) : { protectedText: unit.text, tokens: [] }
+      );
+      slice.forEach((unit) => markPending(unit.el, true));
+      let res;
+      try {
+        res = await sendMsg({
+          type: "TRANSLATE_BATCH",
+          texts: packed.map((item) => item.protectedText),
+          targetLang: settings.targetLang
+        });
+      } catch (err) {
+        console.warn("[Local Translate][batch]", err);
+        res = null;
+      }
       if (disposed) return injected;
-      if (!res?.ok) throw new Error(res?.error || "Translation service failed");
       slice.forEach((unit, idx) => {
-        const out = String(res.results?.[idx] || "").trim();
+        markPending(unit.el, false);
+        let out = String(res?.results?.[idx] || "").trim();
+        if (out && PAGE.restoreStableTokens) out = PAGE.restoreStableTokens(out, packed[idx].tokens);
         if (!out) {
-          if (unit.kind === "text" && injectFailed(unit)) injected += 1;
+          failed.push(unit);
           return;
         }
         if (normalizeCmp(out) === normalizeCmp(unit.text)) return;
@@ -367,7 +443,16 @@
           injected += 1;
         }
       });
+      if (units.length) showProgress(Math.min(0.95, (i + slice.length) / units.length));
     }
+    if (failed.length && retries > 0 && !disposed) {
+      await sleepMs(retries === 2 ? 700 : 1600);
+      return injected + (await translateUnitList(failed, retries - 1));
+    }
+    failed.forEach((unit) => {
+      if (unit.kind === "text" && injectFailed(unit)) injected += 1;
+    });
+    if (failed.length) scheduleFailedSweep();
     return injected;
   }
 
@@ -429,6 +514,70 @@
     };
     window.addEventListener("scroll", scrollHandler, { passive: true, capture: true });
     document.addEventListener("scroll", scrollHandler, { passive: true, capture: true });
+    bindSiteScrollers();
+  }
+
+  function bindSiteScrollers() {
+    if (!scrollHandler) return;
+    const profile = currentSiteProfile();
+    const sels = profile?.scrollRoots || [];
+    sels.forEach((sel) => {
+      document.querySelectorAll(sel).forEach((el) => {
+        if (siteScrollBound.has(el)) return;
+        siteScrollBound.add(el);
+        el.addEventListener("scroll", scrollHandler, { passive: true });
+        boundScrollers.push(el);
+      });
+    });
+  }
+
+  function sleepMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function markPending(el, on) {
+    if (!el?.setAttribute) return;
+    if (on) el.setAttribute("data-lt-pending", "1");
+    else el.removeAttribute("data-lt-pending");
+  }
+
+  function clearFailedStubs() {
+    document.querySelectorAll(".bt-failed-block").forEach((node) => {
+      const host = node.parentElement;
+      node.remove();
+      host?.removeAttribute(DONE);
+      clearHostMarks(host);
+    });
+  }
+
+  function scheduleFailedSweep() {
+    clearTimeout(failedSweepTimer);
+    failedSweepTimer = setTimeout(() => {
+      sweepFailedBlocks().catch(() => {});
+    }, 2500);
+  }
+
+  async function sweepFailedBlocks() {
+    if (!isEnabled() || disposed || translating) return;
+    const buttons = [...document.querySelectorAll(".bt-failed-block")].slice(0, 16);
+    if (!buttons.length) return;
+    const units = buttons
+      .filter((node) => Number(node.getAttribute("data-lt-retries") || 0) < 2)
+      .map((node) => ({
+        el: node.parentElement,
+        text: node.getAttribute("data-lt-text") || "",
+        kind: "text",
+        retries: Number(node.getAttribute("data-lt-retries") || 0) + 1,
+        node
+      }))
+      .filter((unit) => unit.el && unit.text);
+    if (!units.length) return;
+    units.forEach((unit) => unit.node.remove());
+    units.forEach((unit) => {
+      unit.el.removeAttribute(DONE);
+      clearHostMarks(unit.el);
+    });
+    await translateUnitList(units, 1);
   }
 
   function normalizeCmp(s) {
@@ -453,9 +602,9 @@
 
     const pushTextUnit = (el, text, kind = "text", priority = 0) => {
       if (!el || hostDone.has(el)) return;
-      if (el.getAttribute?.(DONE)) return;
+      if (el.getAttribute?.(DONE) || el.getAttribute?.("data-lt-pending")) return;
       if (el.closest?.(".bt-translated-block, .bt-failed-block")) return;
-      if (el.querySelector?.(".bt-translated-block, .bt-failed-block, [data-lt-done]")) return;
+      if (el.querySelector?.(".bt-translated-block, .bt-failed-block, [data-lt-done], [data-lt-pending]")) return;
       if (kind === "text" && hasTranslatableElementChild(el)) return;
       if (viewportOnly && !isInViewport(el)) return;
       if (nearViewport && !isNearViewport(el)) return;
@@ -497,8 +646,8 @@
         const host = parent.tagName === "OPTION" ? parent : findBestHost(parent);
         if (!host) continue;
         if (host.tagName === "SELECT") continue;
-        if (host.getAttribute(DONE)) continue;
-        if (host.querySelector?.(".bt-translated-block, .bt-failed-block, [data-lt-done]")) continue;
+        if (host.getAttribute(DONE) || host.getAttribute("data-lt-pending")) continue;
+        if (host.querySelector?.(".bt-translated-block, .bt-failed-block, [data-lt-done], [data-lt-pending]")) continue;
         if (viewportOnly && !isInViewport(host)) continue;
         if (nearViewport && !isNearViewport(host)) continue;
         if (!hostMap.has(host)) hostMap.set(host, []);
@@ -585,9 +734,10 @@
     let p = 0;
     const t = String(text || "").trim();
     const tag = el?.tagName || "";
+    if (SEMANTIC_BLOCK_TAGS.has(tag) || /^H[1-6]$/.test(tag)) p += 48;
     if (tag === "TH" || el?.getAttribute?.("role") === "columnheader") p += 40;
     if (/^H[1-6]$/.test(tag) || el?.getAttribute?.("role") === "heading") p += 35;
-    if (tag === "BUTTON" || el?.getAttribute?.("role") === "button") p += 25;
+    if (tag === "BUTTON" || el?.getAttribute?.("role") === "button") p += 8;
     if (tag === "OPTION" || tag === "LABEL" || tag === "LEGEND" || tag === "SUMMARY") p += 30;
     if (t.length > 0 && t.length <= 28) p += 15;
     if (typeof UI_LABEL_RE !== "undefined" && UI_LABEL_RE.test(t)) p += 50;
@@ -638,7 +788,7 @@
     return (clone.textContent || "").replace(/\s+/g, " ").trim();
   }
 
-  /** Skip container chromeSel hits when a child element already carries the label. */
+  /** Skip a container only when a child is itself a block unit (nested P/LI). Inline A/CODE stay in the parent sentence. */
   function hasTranslatableElementChild(el) {
     if (!el?.children?.length) return false;
     for (const child of el.children) {
@@ -649,44 +799,99 @@
         continue;
       }
       if (SKIP_TAGS.has(child.tagName)) continue;
+      if (isInlinePiece(child)) continue;
       const t = getElementOriginalText(child);
-      if (t && shouldTranslateText(t)) return true;
+      if (!t || !shouldTranslateText(t)) continue;
+      if (
+        SEMANTIC_BLOCK_TAGS.has(child.tagName) ||
+        /^H[1-6]$/.test(child.tagName) ||
+        child.tagName === "DIV" ||
+        child.tagName === "SECTION" ||
+        child.tagName === "ARTICLE"
+      ) {
+        return true;
+      }
     }
     return false;
   }
 
   // ─── Host selection: leaf-first strategy ───
 
+  function enclosingBlock(el) {
+    let cur = el;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      if (PAGE.isBlockHostTag ? PAGE.isBlockHostTag(cur.tagName) : SEMANTIC_BLOCK_TAGS.has(cur.tagName)) {
+        return cur;
+      }
+      if (cur.tagName === "DIV" || cur.tagName === "FONT" || cur.tagName === "CENTER") {
+        const kids = [...(cur.children || [])].filter(
+          (c) =>
+            !isInlinePiece(c) &&
+            c.tagName !== "BR" &&
+            c.tagName !== "FONT" &&
+            c.tagName !== "CENTER"
+        );
+        const t = (cur.textContent || "").replace(/\s+/g, " ").trim();
+        if (t.length >= 12 && kids.length === 0) return cur;
+      }
+      cur = cur.parentElement;
+    }
+    return null;
+  }
+
+  function isInlinePiece(el) {
+    if (!el) return false;
+    if (PAGE.isInlinePieceTag) return PAGE.isInlinePieceTag(el.tagName);
+    return INLINE_TAGS.has(el.tagName) || el.tagName === "BR";
+  }
+
   function findBestHost(el) {
     if (!el || el === document.body || el === document.documentElement) return null;
 
-    // Strategy 1: leaf element (no children or text/inline only) — use directly
-    if (isLeafHost(el)) {
+    const block = enclosingBlock(el);
+    if (block && block !== el) {
+      const blockText = (block.textContent || "").replace(/\s+/g, " ").trim();
+      const elText = (el.textContent || "").replace(/\s+/g, " ").trim();
+      const prefer =
+        PAGE.shouldHostAtAncestor
+          ? PAGE.shouldHostAtAncestor(blockText, elText)
+          : blockText.length > elText.length + 8;
+      if (prefer) return block;
+    }
+
+    if (isInlinePiece(el) && block) return block;
+
+    if (isLeafHost(el) && !isInlinePiece(el)) {
       return el;
     }
 
-    // Strategy 2: walk up to nearest semantic block tag
     let cur = el;
     let depth = 0;
-    let bestSmall = null; // Best short-text host
-    let bestBlock = null; // Best semantic block host
+    let bestSmall = null;
+    let bestBlock = null;
 
     while (cur && cur !== document.body && depth < 10) {
       const tag = cur.tagName;
 
-      // Semantic block tag — return directly
-      if (SEMANTIC_BLOCK_TAGS.has(tag)) {
+      if (SEMANTIC_BLOCK_TAGS.has(tag) || /^H[1-6]$/.test(tag)) {
         const t = (cur.textContent || "").replace(/\s+/g, " ").trim();
-        if (t.length > 0 && t.length <= 800) return cur;
+        if (t.length > 0 && t.length <= 2000) return cur;
       }
 
-      // BUTTON / A / LABEL — interactive elements first
       if (tag === "BUTTON" || tag === "A" || tag === "LABEL") {
         const t = (cur.textContent || "").replace(/\s+/g, " ").trim();
+        const outer = enclosingBlock(cur);
+        if (outer && outer !== cur) {
+          const ot = (outer.textContent || "").replace(/\s+/g, " ").trim();
+          if (PAGE.shouldHostAtAncestor ? PAGE.shouldHostAtAncestor(ot, t) : ot.length > t.length + 8) {
+            cur = cur.parentElement;
+            depth += 1;
+            continue;
+          }
+        }
         if (t.length > 0 && t.length <= 300) return cur;
       }
 
-      // Short-text small host (span/div, etc.)
       if (["SPAN", "DIV", "SMALL", "STRONG", "EM", "B", "I"].includes(tag)) {
         const t = (cur.textContent || "").replace(/\s+/g, " ").trim();
         if (t.length > 0 && t.length <= 80 && cur.children.length <= 2) {
@@ -701,8 +906,7 @@
       depth += 1;
     }
 
-    // Prefer shortest small host
-    return bestSmall || bestBlock || el;
+    return bestSmall || bestBlock || block || el;
   }
 
   // Whether element is a leaf host (text or inline children only)
@@ -828,11 +1032,22 @@
         cur.tagName === "ASIDE" ||
         cur.getAttribute?.("role") === "navigation" ||
         cur.getAttribute?.("role") === "banner" ||
-        cur.getAttribute?.("role") === "contentinfo"
+        cur.getAttribute?.("role") === "contentinfo" ||
+        cur.getAttribute?.("role") === "toolbar" ||
+        cur.getAttribute?.("role") === "menubar" ||
+        cur.getAttribute?.("role") === "complementary"
       ) {
         return true;
       }
-      if (skipCode && (cur.tagName === "CODE" || cur.tagName === "PRE")) return true;
+      if (isSiteChrome(cur)) return true;
+      if (skipCode && cur.tagName === "PRE") return true;
+      if (
+        skipCode &&
+        cur.tagName === "CODE" &&
+        (cur.closest("pre") || /\n/.test(cur.textContent || ""))
+      ) {
+        return true;
+      }
       if (cur.isContentEditable) return true;
 
       if (cur.getAttribute?.("aria-hidden") === "true") {
@@ -853,24 +1068,73 @@
 
   // ─── Inject translation ───
 
-  // Elements whose translation should stay on the same line as the
-  // original text instead of stacking below it — this keeps buttons,
-  // badges, pills and table cells from growing taller than their siblings.
-  const COMPACT_HOST_TAGS = new Set([
-    "A", "BUTTON", "LABEL", "SPAN", "STRONG", "EM", "B", "I", "SMALL", "TH", "TD"
-  ]);
+  // Compact = short chrome (button/chip/label). Email copy stacks as block pairs.
   const COMPACT_HOST_CLASS_RE = /\b(Label|Badge|Counter|State|Tag|Pill|chip|tooltipped)\b/i;
+
+  function hostTextLength(el) {
+    const text = getElementOriginalText(el) || String(el?.textContent || "").replace(/\s+/g, " ").trim();
+    return text.length;
+  }
+
+  function parseRgb(color) {
+    const m = String(color || "").match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/i);
+    if (!m) return null;
+    return [Number(m[1]), Number(m[2]), Number(m[3])];
+  }
+
+  function hostToneClass(el) {
+    try {
+      const rgb = parseRgb(getComputedStyle(el).color);
+      if (!rgb) return "";
+      const lin = rgb.map((v) => {
+        const s = v / 255;
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      });
+      const L = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+      return L >= 0.55 ? "bt-host-dark" : "bt-host-light";
+    } catch {
+      return "";
+    }
+  }
+
+  function markHost(el, compact) {
+    el.classList.add("bt-host");
+    el.classList.remove("bt-host-compact", "bt-host-dark", "bt-host-light");
+    if (compact) el.classList.add("bt-host-compact");
+    const tone = hostToneClass(el);
+    if (tone) el.classList.add(tone);
+  }
+
+  function clearHostMarks(el) {
+    el?.classList?.remove("bt-host", "bt-host-compact", "bt-host-dark", "bt-host-light");
+  }
 
   function isCompactHost(el) {
     if (!el) return false;
-    if (COMPACT_HOST_TAGS.has(el.tagName)) return true;
+    const tag = el.tagName;
+    if (SEMANTIC_BLOCK_TAGS.has(tag) || /^H[1-6]$/.test(tag)) return false;
+    const len = hostTextLength(el);
+    if (len > 36) return false;
+    try {
+      const st = getComputedStyle(el);
+      const fontPx = parseFloat(st.fontSize) || 0;
+      const bodyPx = parseFloat(getComputedStyle(document.body).fontSize) || 16;
+      if (fontPx >= bodyPx * 1.12) return false;
+      if (st.display === "block" || st.display === "flex" || st.display === "grid" || st.display === "table-cell") {
+        return (tag === "A" || tag === "BUTTON") && len <= 28;
+      }
+    } catch {
+      /* computed style unavailable */
+    }
+    if (tag === "BUTTON" || tag === "LABEL") return true;
+    if (tag === "A") return len <= 28;
     if (typeof el.className === "string" && COMPACT_HOST_CLASS_RE.test(el.className)) return true;
     try {
       const disp = getComputedStyle(el).display;
-      if (disp === "inline" || disp === "inline-block" || disp === "inline-flex" || disp === "inline-grid") {
-        return true;
-      }
-    } catch (_) {}
+      if ((disp === "inline" || disp === "inline-flex") && len <= 22) return true;
+    } catch {
+      /* ignore */
+    }
     return false;
   }
 
@@ -879,51 +1143,58 @@
     if (el.querySelector(".bt-translated-block, .bt-failed-block")) return false;
 
     el.setAttribute(DONE, "1");
-    el.classList.add("bt-host");
-    if (isCompactHost(el)) el.classList.add("bt-host-compact");
+    const compact = isCompactHost(el);
+    markHost(el, compact);
 
     if (settings?.displayMode === "translation-only") wrapOriginal(el);
 
     const node = document.createElement("span");
     node.className = "bt-translated-block";
     node.setAttribute("lang", settings?.targetLang || "zh-CN");
-    if (originalText && originalText.length <= 40) node.classList.add("bt-small");
+    node.setAttribute("role", "note");
+    if (compact) node.classList.add("bt-small");
     node.textContent = translatedText;
 
     el.appendChild(node);
     return true;
   }
 
-  /** Failed unit: clickable retry stub (no empty silent fail). */
+  /** Failed unit: clickable retry stub after silent retries are exhausted. */
   function injectFailed(unit) {
     const el = unit?.el;
     if (!el || unit.kind !== "text") return false;
     if (el.querySelector(":scope > .bt-translated-block, :scope > .bt-failed-block")) return false;
     el.setAttribute(DONE, "1");
-    el.classList.add("bt-host");
+    markHost(el, false);
     const node = document.createElement("button");
     node.type = "button";
     node.className = "bt-failed-block";
-    node.textContent = "Retry translate";
+    node.textContent = retryLabel();
+    node.setAttribute("data-lt-text", unit.text);
+    node.setAttribute("data-lt-retries", String(unit.retries || 0));
     node.addEventListener("click", async (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
       node.disabled = true;
       node.textContent = "…";
       try {
+        const packed = PAGE.protectStableTokens
+          ? PAGE.protectStableTokens(unit.text)
+          : { protectedText: unit.text, tokens: [] };
         const res = await sendMsg({
           type: "TRANSLATE_BATCH",
-          texts: [unit.text],
+          texts: [packed.protectedText],
           targetLang: settings?.targetLang
         });
-        const out = String(res?.results?.[0] || "").trim();
+        let out = String(res?.results?.[0] || "").trim();
+        if (out && PAGE.restoreStableTokens) out = PAGE.restoreStableTokens(out, packed.tokens);
         if (!out) throw new Error("empty");
         node.remove();
         el.removeAttribute(DONE);
         injectAfter(el, out, unit.text);
       } catch {
         node.disabled = false;
-        node.textContent = "Retry translate";
+        node.textContent = retryLabel();
       }
     });
     el.appendChild(node);
@@ -975,9 +1246,10 @@
 
   function restorePage() {
     document.querySelectorAll(".bt-translated-block, .bt-failed-block").forEach((n) => n.remove());
-    document.querySelectorAll(`[${DONE}]`).forEach((el) => {
+    document.querySelectorAll(`[${DONE}], [data-lt-pending]`).forEach((el) => {
       el.removeAttribute(DONE);
-      el.classList.remove("bt-host");
+      el.removeAttribute("data-lt-pending");
+      clearHostMarks(el);
     });
     document.querySelectorAll(".bt-original-hidden").forEach((span) => {
       const parent = span.parentNode;
@@ -1003,6 +1275,8 @@
 
     translated = false;
     setEnabled(false);
+    pendingRetranslate = false;
+    clearTimeout(failedSweepTimer);
     if (observer) {
       observer.disconnect();
       observer = null;
@@ -1034,6 +1308,7 @@
       timer = setTimeout(() => {
         const roots = [...pendingRoots];
         pendingRoots.clear();
+        bindSiteScrollers();
         translateIncremental(roots).catch(() => {});
       }, 220);
     });
@@ -1096,11 +1371,20 @@
     disposed = true;
     clearTimeout(spaTimer);
     clearTimeout(scrollTimer);
+    clearTimeout(failedSweepTimer);
     if (observer) observer.disconnect();
     observer = null;
     if (scrollHandler) {
       window.removeEventListener("scroll", scrollHandler, true);
       document.removeEventListener("scroll", scrollHandler, true);
+      boundScrollers.forEach((el) => {
+        try {
+          el.removeEventListener("scroll", scrollHandler);
+        } catch {
+          /* detached */
+        }
+      });
+      boundScrollers.length = 0;
       scrollHandler = null;
     }
     if (spaSchedule) {

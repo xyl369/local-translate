@@ -17,6 +17,7 @@ test("runtime contains no China-vendor, analytics, or telemetry clients", () => 
   const runtimeFiles = [
     "background.js",
     "content.js",
+    "page-core.js",
     "offscreen.js",
     "popup.js",
     "popup-i18n.js",
@@ -38,6 +39,8 @@ test("background fetch allowlist stays limited to Google and YouTube", () => {
   const hosts = [...block[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(hosts, [
     "translate.googleapis.com",
+    "translate-pa.googleapis.com",
+    "clients5.google.com",
     "www.youtube.com",
     "youtube.com"
   ]);
@@ -93,4 +96,24 @@ test("caption-track discovery retries until DOM fallback can upgrade", () => {
   assert.match(runtime, /Math\.min\(4000/);
   assert.match(runtime, /if \(!raw\.length\) \{\s*scheduleTrackRetry\(token\)/);
   assert.doesNotMatch(runtime, /const fallbacks = \["en", "en-US"\]/);
+});
+
+test("page translation uses silent retry and Gmail site rules", () => {
+  const content = read("content.js");
+  const background = read("background.js");
+  const css = read("content.css");
+  assert.match(content, /SITE_PROFILES/);
+  assert.ok(content.includes(String.raw`mail\.google\.com`));
+  assert.match(content, /pendingRetranslate/);
+  assert.match(content, /scheduleFailedSweep/);
+  assert.match(content, /retries = 2/);
+  assert.match(content, /hostToneClass/);
+  assert.match(css, /color:\s*inherit/);
+  assert.doesNotMatch(css, /#5b6b7c/);
+  assert.doesNotMatch(content, /"SPAN", "STRONG", "EM"/);
+  assert.match(background, /translate-pa\.googleapis\.com/);
+  assert.match(background, /clients5\.google\.com/);
+  assert.match(background, /page-core\.js/);
+  assert.match(content, /shouldHostAtAncestor|enclosingBlock/);
+  assert.doesNotMatch(background, /CONCURRENCY = 6/);
 });

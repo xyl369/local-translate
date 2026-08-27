@@ -291,7 +291,7 @@ async function ensureContentScript(tabId, tabUrl) {
   }
 
   if (!contentReady) {
-    const files = ["content.js"];
+    const files = ["page-core.js", "content.js"];
     try {
       await chrome.scripting.insertCSS({ target: { tabId }, files: ["content.css"] });
     } catch {
