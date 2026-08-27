@@ -116,4 +116,6 @@ test("page translation uses silent retry and Gmail site rules", () => {
   assert.match(background, /page-core\.js/);
   assert.match(content, /shouldHostAtAncestor|enclosingBlock/);
   assert.doesNotMatch(background, /CONCURRENCY = 6/);
+  assert.doesNotMatch(content, /function showProgress|function hideProgress/);
+  assert.doesNotMatch(css, /#bt-progress/);
 });

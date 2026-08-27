@@ -147,26 +147,6 @@ html.bt-style-muted .bt-host-compact.bt-host-light > .bt-translated-block {
   line-height: 1;
 }
 
-/* Progress bar */
-#bt-progress {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-  z-index: 2147483647;
-  background: transparent;
-  pointer-events: none;
-}
-
-#bt-progress > i {
-  display: block;
-  height: 100%;
-  width: 0%;
-  background: linear-gradient(90deg, #2563eb, #06b6d4);
-  transition: width 0.2s ease;
-}
-
 /* YouTube bilingual subtitle — dual EN/ZH panels (up to 4 lines), draggable */
 #lt-yt-overlay {
   position: fixed;

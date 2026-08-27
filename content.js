@@ -13,6 +13,7 @@
   }
   window.__LT_LOADED__ = true;
   window.__LT_CONTENT_VERSION__ = CONTENT_VERSION;
+  document.getElementById("bt-progress")?.remove();
 
   const DONE = "data-lt-done";
   const SKIP_TAGS = new Set([
@@ -376,7 +377,6 @@
       });
       let injected = 0;
       if (visible.length) {
-        showProgress(0.05);
         injected = await translateUnitList(visible);
       }
 
@@ -395,7 +395,6 @@
       throw err;
     } finally {
       translating = false;
-      hideProgress();
       if (pendingRetranslate && !disposed) {
         pendingRetranslate = false;
         queueMicrotask(() => startTranslate({ force: false }).catch(() => {}));
@@ -443,7 +442,6 @@
           injected += 1;
         }
       });
-      if (units.length) showProgress(Math.min(0.95, (i + slice.length) / units.length));
     }
     if (failed.length && retries > 0 && !disposed) {
       await sleepMs(retries === 2 ? 700 : 1600);
@@ -625,7 +623,7 @@
           if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
           const parent = node.parentElement;
           if (!parent) return NodeFilter.FILTER_REJECT;
-          if (parent.closest(".bt-translated-block, #bt-selection-toast, #bt-progress, #lt-yt-overlay")) {
+          if (parent.closest(".bt-translated-block, #bt-selection-toast, #lt-yt-overlay")) {
             return NodeFilter.FILTER_REJECT;
           }
           if (parent.closest(".ytp-caption-window-container, .html5-video-player")) {
@@ -1281,7 +1279,6 @@
       observer.disconnect();
       observer = null;
     }
-    hideProgress();
   }
 
   // ─── Dynamic content observer (scroll-loaded comments, etc.) ───
@@ -1298,7 +1295,7 @@
         m.addedNodes.forEach((n) => {
           if (n.nodeType !== 1) return;
           if (n.classList?.contains("bt-translated-block")) return;
-          if (n.id === "bt-progress" || n.id === "lt-yt-overlay") return;
+          if (n.id === "lt-yt-overlay") return;
           if (n.closest?.(".ytp-caption-window-container")) return;
           pendingRoots.add(n);
         });
@@ -1407,24 +1404,6 @@
   }
 
   // ─── UI ───
-
-  function showProgress(ratio) {
-    // No top progress bar on YouTube watch (subs follow doesn't need it)
-    if (/youtube\.com\/watch|youtu\.be\//i.test(location.href)) return;
-    let bar = document.getElementById("bt-progress");
-    if (!bar) {
-      bar = document.createElement("div");
-      bar.id = "bt-progress";
-      bar.innerHTML = "<i></i>";
-      document.documentElement.appendChild(bar);
-    }
-    const i = bar.querySelector("i");
-    if (i) i.style.width = `${Math.max(2, Math.min(100, ratio * 100))}%`;
-  }
-
-  function hideProgress() {
-    document.getElementById("bt-progress")?.remove();
-  }
 
   function showToast(title, detail) {
     document.getElementById("bt-selection-toast")?.remove();

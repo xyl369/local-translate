@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.10.3] — 2026-08-27
+
+- Remove the page-top translation progress bar
+- Popup no longer shows a live count or “scroll for more” progress status after translating
+
 ## [3.10.2] — 2026-08-27
 
 ### Paragraph grain (inline links / model ids)

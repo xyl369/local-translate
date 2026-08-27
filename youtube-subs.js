@@ -228,7 +228,6 @@
     bindVideo();
     watchCaptions();
     startPoll();
-    document.getElementById("bt-progress")?.remove();
 
     // Follow current CC immediately
     tickDom(true);

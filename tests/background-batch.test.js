@@ -37,7 +37,7 @@ function loadBackground(fetchImpl) {
       onMessage: { addListener(listener) { runtimeListener = listener; } },
       getContexts: async () => [],
       getURL: (value) => value,
-      getManifest: () => ({ version: "3.10.2" }),
+      getManifest: () => ({ version: "3.10.3" }),
       sendMessage: async () => ({ available: false })
     },
     contextMenus: { onClicked: noopEvent, removeAll() {}, create() {} },
@@ -227,7 +227,7 @@ test("runtime health reports the loaded background version and engine", async ()
     if (keepAlive !== true) reject(new Error("health response channel was not kept alive"));
   });
   assert.equal(response.ok, true);
-  assert.equal(response.version, "3.10.2");
+  assert.equal(response.version, "3.10.3");
   assert.equal(response.engine, "google");
   assert.equal(response.targetLang, "zh-CN");
   assert.equal(response.settings.videoSubsAuto, true);

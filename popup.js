@@ -197,8 +197,7 @@ async function onTranslateClick() {
       return;
     }
     $("btn-translate").disabled = true;
-    setStatus("translatingViewport");
-    setEngine("engineViewportOnly", null, "engine");
+    setStatus("translating");
 
     const res = await sendToActiveTab(
       { type: "TRANSLATE_PAGE" },
@@ -213,9 +212,8 @@ async function onTranslateClick() {
       return;
     }
 
-    if (res.count != null) setStatus("translatedCount", { count: res.count });
-    else setStatus("enabled");
-    setEngine("engineAutoScroll", null, "engine ok");
+    setStatus("enabled");
+    refreshEngineLabel();
   } catch (err) {
     setStatus("failed");
     setRawEngine(String(err?.message || err), "engine bad");
@@ -404,7 +402,7 @@ async function refreshStatus() {
       return;
     }
     if (res?.translating) setStatus("translating");
-    else if (res?.translated || res?.enabled) setStatus("translatedScroll");
+    else if (res?.translated || res?.enabled) setStatus("enabled");
   } catch {
     /* ignore */
   }
