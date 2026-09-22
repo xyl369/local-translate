@@ -1,6 +1,6 @@
 {
   "name": "local-translate",
-  "version": "3.10.3",
+  "version": "3.11.1",
   "private": true,
   "scripts": {
     "test": "node --test tests/*.test.js",
@@ -8,6 +8,7 @@
     "verify": "npm test && npm run test:e2e"
   },
   "devDependencies": {
+    "pdfjs-dist": "4.10.38",
     "playwright-core": "1.62.0"
   }
 }

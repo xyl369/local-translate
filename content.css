@@ -1,20 +1,46 @@
-/* Bilingual target line: inherit host color at reduced opacity (muted follow). */
+/* Bilingual pair — Immersive Translate pattern:
+   original stays in place; translation is the next line, same color at lower opacity.
+   Never inherit icon-font ligatures. */
+
+.bt-host {
+  min-width: 0;
+}
+
+.bt-pair {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.12em;
+  min-width: 0;
+  flex: 1 1 auto;
+  text-align: start;
+}
+
+.bt-host-row {
+  flex-wrap: wrap;
+}
 
 .bt-translated-block {
   display: block;
   box-sizing: border-box;
   width: 100%;
   max-width: 100%;
-  margin: 0.28em 0 0;
+  flex: 1 1 100%;
+  margin: 0.16em 0 0;
   padding: 0;
   border: 0;
-  font-family: "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", inherit;
-  font-size: 0.96em;
+  font-family: "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 0.9em;
   font-weight: 400;
   font-style: normal;
-  line-height: 1.65;
-  letter-spacing: 0.02em;
+  font-feature-settings: "liga" 0, "clig" 0;
+  font-variant-ligatures: none;
+  font-variation-settings: normal;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
   color: inherit;
+  text-align: start;
   text-decoration: none;
   text-shadow: none;
   white-space: pre-wrap;
@@ -22,16 +48,21 @@
   -webkit-font-smoothing: antialiased;
 }
 
+.bt-pair > .bt-translated-block {
+  margin-top: 0;
+  width: 100%;
+}
+
 html.bt-style-muted .bt-translated-block {
   color: inherit;
   opacity: 0.66;
 }
 
-html.bt-style-muted .bt-host-light > .bt-translated-block {
+html.bt-style-muted .bt-host-light .bt-translated-block {
   opacity: 0.62;
 }
 
-html.bt-style-muted .bt-host-dark > .bt-translated-block {
+html.bt-style-muted .bt-host-dark .bt-translated-block {
   opacity: 0.78;
 }
 
@@ -52,15 +83,27 @@ html.bt-style-muted .bt-host-dark > .bt-translated-block {
   border-radius: 0 4px 4px 0;
 }
 
-/* Short chrome only. Headings and email copy always stack as a pair. */
+/* Tiny inline chips only — menus/headings always use the stacked pair above. */
 .bt-host-compact > .bt-translated-block {
   display: inline;
   width: auto;
-  margin: 0 0 0 0.4em;
-  font-size: 0.9em;
+  flex: none;
+  margin: 0 0 0 0.2em;
+  font-size: 0.84em;
   line-height: inherit;
-  white-space: normal;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 12em;
   opacity: 0.7;
+  vertical-align: baseline;
+}
+
+.bt-host-compact > .bt-translated-block::before {
+  content: "·";
+  margin: 0 0.28em 0 0.08em;
+  opacity: 0.45;
+  font-weight: 400;
 }
 
 html.bt-style-muted .bt-host-compact.bt-host-dark > .bt-translated-block {

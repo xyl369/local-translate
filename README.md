@@ -52,7 +52,8 @@ No analytics · no account system · no China-vendor SDKs · settings stay on-de
 A lightweight Chromium extension that provides:
 
 1. **Bilingual web translation** — Viewport-first; continues on scroll
-2. **YouTube dual subtitles** — Prefetch + cache for near-zero playback delay
+2. **PDF bilingual reader** — Original page kept; prose in a side column, bilingual or translation only
+3. **YouTube dual subtitles** — Prefetch + cache for near-zero playback delay
 3. **Site blocklist** — Never translate specified domains
 4. **Hotkey** — `Alt+A` to toggle translation / restore original
 
@@ -63,9 +64,11 @@ Uses **Google Translate web endpoints** by default (same family as [Translate We
 | Feature | Description |
 |---------|-------------|
 | Viewport translation | Visible area first; scroll backfill |
+| PDF reader | Chrome's viewer has no HTML text. Translate page opens a PDF.js reader: figures stay on the page, prose sits in a side column. The toolbar switches bilingual and translation-only. Local files need **Allow access to file URLs**, or drop the PDF onto the reader |
 | Engine switch | Google (default) or Chrome on-device |
 | Bilingual / translation-only | Switchable display mode |
 | Translation style | Muted / underline / left color bar |
+| Bilingual layout | Next-line pair (Immersive Translate); skip icon ligatures; tiny chips stay inline |
 | Skip code + site chrome | `<code>` / `<pre>`; skip nav/header/footer/aside |
 | Retry failed blocks | Silent retry, then click **Retry translate** / **重试翻译** |
 | Context menu | Translate selection / bilingual page |
@@ -112,6 +115,9 @@ local-translate/
 ├── background.js         # Engines + allowlisted fetch
 ├── offscreen.html/.js    # Chrome on-device Translator
 ├── page-core.js          # Paragraph grain + stable token protect
+├── pdf-core.js           # PDF paragraph grain (no PDF.js)
+├── pdf-viewer.html/.js/.css
+├── vendor/pdfjs/         # Mozilla PDF.js 4.10.38 (Apache-2.0)
 ├── content.js / content.css
 ├── youtube-bridge.js     # MAIN-world timedtext sniffer
 ├── youtube-subs-core.js  # Pure cue alignment / prefetch helpers
@@ -157,7 +163,8 @@ Keep it auditable and light: **no analytics, no China-vendor SDKs, no cloud acco
 轻量 Chromium 扩展：
 
 1. **网页双语翻译** — 视口优先，滚动续译  
-2. **YouTube 双语字幕** — 预译缓存  
+2. **PDF 双语阅读** — 原页保留，正文在侧栏，可中英对照或只看译文  
+3. **YouTube 双语字幕** — 预译缓存  
 3. **站点屏蔽**  
 4. **快捷键** `Alt+A`
 
@@ -171,8 +178,10 @@ Keep it auditable and light: **no analytics, no China-vendor SDKs, no cloud acco
 | 功能 | 说明 |
 |------|------|
 | 视口翻译 | 先译可见区域，滚动补译 |
+| PDF 阅读 | Chrome 自带阅读器没有 HTML 文本。点「翻译页面」会打开 PDF.js 阅读器：图和公式留在原页，正文在侧栏。工具栏可切换中英对照和只看译文。本地文件需打开扩展的「允许访问文件网址」，或把 PDF 拖进阅读器 |
 | 双语 / 仅译文 | 可切换 |
 | 译文样式 | 淡色 / 下划线 / 左侧色条 |
+| 双语排版 | 原文下一行译文（沉浸式翻译式）；过滤图标连字；短按钮才同行 |
 | 跳过代码块 | 默认不译 `<code>` / `<pre>` |
 | 右键菜单 | 选中 / 整页 |
 | YouTube 字幕 | 时间轴优先、整句稳定显示、时间对齐、批量预译 |

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Local Translate PDF</title>
+    <link rel="stylesheet" href="pdf-viewer.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <div class="bar-title">
+        <img src="icons/icon48.png" width="22" height="22" alt="" />
+        <strong id="brand">Local Translate</strong>
+        <span id="docName"></span>
+      </div>
+      <p id="status" class="status">…</p>
+      <div class="modes" role="group" aria-label="Display">
+        <button id="modeBilingual" type="button" aria-pressed="true">中英对照</button>
+        <button id="modeZh" type="button" aria-pressed="false">只看中文</button>
+      </div>
+      <button id="restore" class="restore" type="button">Restore original</button>
+    </header>
+    <p id="hint" class="hint"></p>
+    <p id="banner" class="banner" hidden></p>
+    <main id="stage">
+      <section id="drop" class="drop" hidden>
+        <p id="dropText"></p>
+        <button id="choose" class="restore" type="button"></button>
+        <input id="file" type="file" accept="application/pdf,.pdf" hidden />
+      </section>
+      <div id="pages"></div>
+    </main>
+    <script src="pdf-core.js"></script>
+    <script type="module" src="pdf-viewer.js"></script>
+  </body>
+</html>

@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Local Translate bilingual UI fixture</title>
+  <link rel="stylesheet" href="../content.css" />
+  <style>
+    :root { color-scheme: light; }
+    body {
+      margin: 0;
+      font: 14px/1.45 "Google Sans", "Segoe UI", system-ui, sans-serif;
+      background: #f7f8fa;
+      color: #1f1f1f;
+    }
+    .page {
+      display: grid;
+      grid-template-columns: 280px 1fr 240px;
+      gap: 20px;
+      padding: 28px;
+      max-width: 1100px;
+    }
+    h1 { font-size: 22px; margin: 0 0 8px; font-weight: 500; }
+    .muted { color: #5f6368; }
+    .card, .menu, .side {
+      background: #fff;
+      border: 1px solid #e3e4e6;
+      border-radius: 16px;
+      padding: 16px;
+    }
+    .menu {
+      padding: 8px;
+    }
+    .item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      border-radius: 12px;
+    }
+    .item:hover { background: #f1f3f4; }
+    .icon {
+      width: 22px;
+      height: 22px;
+      flex: none;
+      color: #444;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .icon svg { width: 20px; height: 20px; fill: currentColor; }
+    .label { min-width: 0; flex: 1; }
+    .cards { display: grid; gap: 12px; }
+    .card h2 { font-size: 16px; margin: 0 0 6px; font-weight: 600; }
+    .side h3 { margin: 0 0 12px; font-size: 13px; font-weight: 600; }
+    .row { margin: 0 0 14px; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 1px solid #dadce0;
+      background: #fff;
+    }
+    html.bt-style-muted { }
+  </style>
+</head>
+<body>
+  <script>document.documentElement.classList.add("bt-style-muted");</script>
+  <div class="page">
+    <section class="menu" id="menu">
+      <div class="item" role="menuitem">
+        <span class="icon google-symbols" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8z"/></svg></span>
+        Submit prompt key
+      </div>
+      <div class="item" role="menuitem">
+        <span class="icon google-symbols" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></span>
+        Account status
+      </div>
+      <div class="item" role="menuitem">
+        <span class="icon google-symbols" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg></span>
+        Privacy policy
+      </div>
+      <div class="item" role="menuitem">
+        <span class="icon google-symbols" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z"/></svg></span>
+        Help
+      </div>
+    </section>
+    <section class="cards">
+      <h1 id="title">Explore Google models</h1>
+      <article class="card">
+        <h2 id="card-title">Code and Chat</h2>
+        <p id="card-copy">Get started with coding using the Gemini models, with access to Gemini's advanced reasoning and coding capabilities.</p>
+      </article>
+      <p>
+        <span class="chip" id="chip">Get code</span>
+      </p>
+    </section>
+    <aside class="side">
+      <div class="row" id="run">
+        <h3>Run settings</h3>
+      </div>
+      <div class="row" id="temp">Temperature</div>
+      <div class="row" id="tools">Tools</div>
+    </aside>
+  </div>
+  <script src="../page-core.js"></script>
+  <script>
+    const PAGE = window.__LT_PAGE_CORE__;
+    const translations = {
+      "Submit prompt key": "提交提示键",
+      "Account status": "账户状态",
+      "Privacy policy": "隐私政策",
+      "Help": "帮助",
+      "Explore Google models": "探索 Google 模型",
+      "Code and Chat": "代码和聊天",
+      "Get started with coding using the Gemini models, with access to Gemini's advanced reasoning and coding capabilities.":
+        "使用 Gemini 模型开始编码，并获得 Gemini 的高级推理与编码能力。",
+      "Get code": "获取代码",
+      "Run settings": "运行设置",
+      "Temperature": "温度",
+      "Tools": "工具"
+    };
+
+    function inject(host, zh) {
+      const layout = PAGE.chooseBilingualLayout({
+        tag: host.tagName,
+        role: host.getAttribute("role") || "",
+        display: getComputedStyle(host).display,
+        textLength: (host.textContent || "").replace(/\s+/g, " ").trim().length,
+        hasIconChild: !!host.querySelector(".google-symbols, .icon"),
+        inMenu: !!host.closest("[role='menuitem'], .menu"),
+        isHeading: /^H[1-6]$/.test(host.tagName),
+        fontPx: parseFloat(getComputedStyle(host).fontSize),
+        bodyPx: 14
+      });
+      host.classList.add("bt-host", layout === "compact" ? "bt-host-compact" : "bt-host-stack");
+      const node = document.createElement("span");
+      node.className = "bt-translated-block";
+      node.lang = "zh-CN";
+      node.textContent = zh;
+      const icon = host.querySelector(".icon, .google-symbols");
+      if (icon) {
+        const pair = document.createElement("span");
+        pair.className = "bt-pair";
+        const move = [];
+        for (const child of [...host.childNodes]) {
+          if (child === icon) continue;
+          if (child.nodeType === Node.TEXT_NODE && child.nodeValue.trim()) move.push(child);
+          else if (child.nodeType === 1 && !child.classList.contains("icon")) move.push(child);
+        }
+        if (move.length) host.insertBefore(pair, move[0]);
+        else host.appendChild(pair);
+        move.forEach((n) => pair.appendChild(n));
+        pair.appendChild(node);
+      } else {
+        host.appendChild(node);
+      }
+    }
+
+    document.querySelectorAll(".item").forEach((item) => {
+      const pieces = [];
+      item.childNodes.forEach((n) => {
+        if (n.nodeType === Node.TEXT_NODE) pieces.push(n.nodeValue);
+        else if (n.nodeType === 1 && !n.classList.contains("icon") && !n.classList.contains("google-symbols")) {
+          pieces.push(n.textContent);
+        }
+      });
+      const text = PAGE.joinHostPieces(pieces);
+      inject(item, translations[text]);
+    });
+    ["title", "card-title", "card-copy", "chip", "run", "temp", "tools"].forEach((id) => {
+      const el = document.getElementById(id);
+      const key = (el.textContent || "").replace(/\s+/g, " ").trim();
+      inject(el, translations[key]);
+    });
+  </script>
+</body>
+</html>

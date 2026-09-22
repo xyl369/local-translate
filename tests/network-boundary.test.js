@@ -23,7 +23,9 @@ test("runtime contains no China-vendor, analytics, or telemetry clients", () => 
     "popup-i18n.js",
     "youtube-bridge.js",
     "youtube-subs-core.js",
-    "youtube-subs.js"
+    "youtube-subs.js",
+    "pdf-core.js",
+    "pdf-viewer.js"
   ];
   const source = runtimeFiles.map((file) => read(file)).join("\n");
   assert.doesNotMatch(

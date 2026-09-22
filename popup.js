@@ -12,6 +12,7 @@ const DEFAULTS = {
 };
 
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
+const PDF = globalThis.__LT_PDF_CORE__;
 
 const $ = (id) => document.getElementById(id);
 const fields = [
@@ -56,9 +57,7 @@ async function init() {
   $("uiLangToggle").addEventListener("click", onUiLangToggle);
 
   $("btn-translate").addEventListener("click", onTranslateClick);
-  $("btn-restore").addEventListener("click", () =>
-    sendToActiveTab({ type: "RESTORE_PAGE" }, { waitMs: 1500 })
-  );
+  $("btn-restore").addEventListener("click", onRestoreClick);
   $("btn-yt-subs").addEventListener("click", onYtSubsClick);
   $("btn-yt-stop").addEventListener("click", async () => {
     await sendToActiveTab({ type: "YT_SUBS_STOP" }, { waitMs: 800 });
@@ -73,7 +72,28 @@ async function init() {
     refreshEngineLabel();
   }
 
-  refreshStatus().catch(() => {});
+  await refreshStatus().catch(() => {});
+  const tab = await activeTab();
+  if (tab && PDF.isPdfViewerUrl(tab.url, chrome.runtime.id)) {
+    setStatus("enabled");
+    setEngine("pdfViewer", null, "engine ok");
+  }
+}
+
+function activeTab() {
+  return chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => tabs?.[0] || null);
+}
+
+async function onRestoreClick() {
+  const tab = await activeTab();
+  if (tab && PDF.isPdfViewerUrl(tab.url, chrome.runtime.id)) {
+    const src = PDF.pdfViewerSrc(tab.url);
+    if (!src) return;
+    setStatus("restored");
+    await chrome.runtime.sendMessage({ type: "PDF_RESTORE", tabId: tab.id, url: src });
+    return;
+  }
+  sendToActiveTab({ type: "RESTORE_PAGE" }, { waitMs: 1500 });
 }
 
 function refreshEngineLabel() {
@@ -196,6 +216,42 @@ async function onTranslateClick() {
       setEngine("uncheckBlockFirst", null, "engine bad");
       return;
     }
+    const tab = await activeTab();
+    if (tab && PDF.isPdfViewerUrl(tab.url, chrome.runtime.id)) {
+      $("btn-translate").disabled = true;
+      setStatus("translating");
+      const viewer = await chrome.runtime.sendMessage({
+        type: "PDF_VIEWER_CMD",
+        tabId: tab.id,
+        cmd: "translate"
+      });
+      if (!viewer?.ok) throw new Error(viewer?.error || t("translationFailedDefault"));
+      setStatus("enabled");
+      setEngine("pdfViewer", null, "engine ok");
+      return;
+    }
+    if (tab && PDF.isPdfUrl(tab.url)) {
+      $("btn-translate").disabled = true;
+      setStatus("pdfOpening");
+      const opened = await chrome.runtime.sendMessage({
+        type: "OPEN_PDF_VIEWER",
+        tabId: tab.id,
+        url: tab.url
+      });
+      if (!opened?.ok) {
+        if (opened?.blocked) {
+          setStatus("blocked");
+          $("blockSite").checked = true;
+          setEngine("neverTranslateSite", null, "engine");
+          return;
+        }
+        throw new Error(opened?.error || t("translationFailedDefault"));
+      }
+      setStatus("enabled");
+      setEngine("pdfViewer", null, "engine ok");
+      return;
+    }
+
     $("btn-translate").disabled = true;
     setStatus("translating");
 

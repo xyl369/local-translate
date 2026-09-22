@@ -33,8 +33,8 @@ const I18N = {
     lang_th: "Thai",
 
     displayMode: "Display mode",
-    mode_bilingual: "Bilingual (recommended)",
-    mode_translationOnly: "Translation only",
+    mode_bilingual: "English + Chinese",
+    mode_translationOnly: "Chinese only",
 
     translationStyle: "Translation style",
     style_muted: "Muted follow",
@@ -47,7 +47,9 @@ const I18N = {
     videoSubsAuto: "YouTube auto dual subtitles",
     skipCode: "Skip code blocks",
 
-    footer: "Translate page = visible area; scroll for more · turn on CC for video subs",
+    footer: "Translate page = visible area; scroll for more · PDF opens a bilingual reader · turn on CC for video subs",
+    pdfOpening: "Opening PDF…",
+    pdfViewer: "PDF bilingual reader",
 
     saved: "Saved",
     blocked: "Blocked",
@@ -105,8 +107,8 @@ const I18N = {
     lang_th: "泰语",
 
     displayMode: "显示模式",
-    mode_bilingual: "双语（推荐）",
-    mode_translationOnly: "仅译文",
+    mode_bilingual: "中英对照",
+    mode_translationOnly: "只看中文",
 
     translationStyle: "翻译样式",
     style_muted: "灰度跟随",
@@ -119,7 +121,9 @@ const I18N = {
     videoSubsAuto: "YouTube 自动双语字幕",
     skipCode: "跳过代码块",
 
-    footer: "翻译页面 = 可见区域；滚动加载更多 · 视频字幕请开启 CC",
+    footer: "翻译页面 = 可见区域；滚动加载更多 · PDF 打开双语阅读 · 视频字幕请开启 CC",
+    pdfOpening: "正在打开 PDF…",
+    pdfViewer: "PDF 双语阅读",
 
     saved: "已保存",
     blocked: "已屏蔽",

@@ -1,5 +1,27 @@
 # Changelog
 
+## [3.11.1] — 2026-09-22
+
+- PDF translation no longer waits for a whole page before showing anything. Paragraphs return in small batches into a sticky column beside the page, and the page on screen is translated before later pages.
+- The reader toolbar switches between side-by-side original and translation, and translation only. The popup display mode uses the same setting.
+
+## [3.11.0] — 2026-09-22
+
+### PDF bilingual reader
+
+- Chrome's built-in PDF viewer exposes no HTML text, so Translate page / Alt+A opens an in-extension reader instead of walking an empty document
+- PDF.js draws the original page. Prose is clustered into paragraphs (columns, hyphenation, running headers) and translated with the existing engine, visible pages first
+- A local `file://` PDF needs **Allow access to file URLs**, or the file can be dropped onto the reader. Restore returns to Chrome's viewer
+
+## [3.10.4] — 2026-08-30
+
+### Bilingual UI (menus, cards, icon fonts)
+
+- Stop collecting Material / Google Symbols ligatures (`arrow_circle_up`, `account_circle`) as labels
+- Host at the text column, not the icon+label flex row; wrap leftover text into a stacked pair
+- Default to Immersive Translate’s next-line pair; same-line compact is only for tiny chips
+- Force translation onto a UI font so icon ligature fonts cannot leak into 译文
+
 ## [3.10.3] — 2026-08-27
 
 - Remove the page-top translation progress bar

@@ -1,0 +1,277 @@
+:root {
+  --bg: #e7e9ee;
+  --paper: #ffffff;
+  --text: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --primary: #2563eb;
+  --dst: #1e293b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    sans-serif;
+}
+
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.94);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(10px);
+}
+
+.bar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.bar-title img {
+  border-radius: 6px;
+}
+
+.bar-title strong {
+  flex-shrink: 0;
+}
+
+#docName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.status {
+  margin: 0;
+  flex-shrink: 0;
+  color: var(--primary);
+  font-size: 12px;
+}
+
+.modes {
+  display: flex;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--paper);
+}
+
+.modes button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.modes button[aria-pressed="true"] {
+  background: rgba(37, 99, 235, 0.12);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.restore {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.restore:hover {
+  border-color: #cbd5e1;
+}
+
+.hint,
+.banner {
+  max-width: 880px;
+  margin: 12px auto 0;
+  padding: 0 16px;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.banner {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+#stage {
+  padding: 16px 16px 48px;
+}
+
+.drop {
+  max-width: 640px;
+  margin: 32px auto;
+  padding: 36px 24px;
+  text-align: center;
+  border: 1px dashed #94a3b8;
+  border-radius: 16px;
+  background: var(--paper);
+}
+
+.drop.over {
+  border-color: var(--primary);
+  background: #eff6ff;
+}
+
+.page {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(240px, 0.78fr);
+  gap: 16px;
+  align-items: start;
+  width: min(1180px, 100%);
+  margin: 0 auto 28px;
+}
+
+.page-label {
+  grid-column: 1;
+  grid-row: 1;
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sheet {
+  grid-column: 1;
+  grid-row: 2;
+  background: var(--paper);
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.12);
+}
+
+.sheet canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.transcript {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  container-type: inline-size;
+  position: sticky;
+  top: 58px;
+  max-height: calc(100vh - 74px);
+  overflow: auto;
+  width: 100%;
+  margin: 0;
+  padding: 12px 14px 4px;
+  background: var(--paper);
+  border-radius: 10px;
+}
+
+@media (max-width: 880px) {
+  .page {
+    grid-template-columns: 1fr;
+  }
+
+  .page-label,
+  .sheet,
+  .transcript {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .transcript {
+    position: static;
+    max-height: none;
+  }
+}
+
+.para {
+  margin: 0 0 12px;
+}
+
+@container (min-width: 520px) {
+  .transcript[data-mode="bilingual"] .para {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 18px;
+    align-items: start;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .transcript[data-mode="bilingual"] .para .dst {
+    margin: 0;
+  }
+}
+
+.src {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.dst {
+  margin: 2px 0 0;
+  color: var(--dst);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+body[data-mode="translation-only"] .src {
+  display: none;
+}
+
+body[data-style="muted"] .dst {
+  opacity: 0.82;
+}
+
+body[data-style="underline"] .dst {
+  text-decoration: underline;
+  text-decoration-color: rgba(37, 99, 235, 0.45);
+  text-underline-offset: 3px;
+}
+
+body[data-style="box"] .dst {
+  border-left: 3px solid var(--primary);
+  padding-left: 8px;
+}
+
+.retry {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.hide-notes .transcript,
+.hide-notes .hint {
+  display: none;
+}

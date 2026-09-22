@@ -2,7 +2,13 @@
  * Translation service worker.
  * Default engine: Google Translate (free). Optional: Chrome on-device Translator (no big model).
  * Google path: translate-pa list batch, clients5 fallback, then gtx POST.
+ * PDF pages open pdf-viewer.html; paragraph grain lives in pdf-core.js.
  */
+
+importScripts("pdf-core.js");
+const PDF = globalThis.__LT_PDF_CORE__;
+const pdfViewerPorts = new Map();
+const skipPdfAuto = new Set();
 
 const DEFAULT_SETTINGS = {
   targetLang: "zh-CN",
@@ -111,6 +117,10 @@ migrateSyncToLocal().then(() => {
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!tab?.id) return;
+  if (PDF.isPdfUrl(tab.url) || PDF.isPdfViewerUrl(tab.url, chrome.runtime.id)) {
+    if (info.menuItemId === "lt-translate-page") await routePdf(tab, "translate");
+    return;
+  }
   await ensureTabScript(tab.id, tab.url);
   const settings = await getSettings();
   try {
@@ -153,9 +163,57 @@ chrome.commands.onCommand.addListener(async (command) => {
   if (command !== "toggle-translate") return;
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) return;
+  if (await routePdf(tab, "toggle")) return;
   await ensureTabScript(tab.id, tab.url);
   await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_TRANSLATE" });
 });
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "lt-pdf") return;
+  const tabId = port.sender?.tab?.id;
+  if (tabId == null) return;
+  pdfViewerPorts.set(tabId, port);
+  port.onDisconnect.addListener(() => {
+    if (pdfViewerPorts.get(tabId) === port) pdfViewerPorts.delete(tabId);
+  });
+});
+
+async function openPdfViewer(tabId, pdfUrl) {
+  if (!PDF.isPdfUrl(pdfUrl)) throw new Error("Not a PDF");
+  const settings = await getSettings();
+  let host = "";
+  try {
+    host = new URL(pdfUrl).hostname || "";
+  } catch {
+    host = "";
+  }
+  const blocked = Array.isArray(settings.blockedHosts) ? settings.blockedHosts : [];
+  if (host && blocked.includes(host)) {
+    const err = new Error("This site is blocked");
+    err.code = "BLOCKED";
+    throw err;
+  }
+  const viewer = `${chrome.runtime.getURL("pdf-viewer.html")}?src=${encodeURIComponent(pdfUrl)}`;
+  await chrome.tabs.update(tabId, { url: viewer });
+}
+
+async function restorePdfTab(tabId, pdfUrl) {
+  if (!tabId || !PDF.isPdfUrl(pdfUrl)) throw new Error("Not a PDF");
+  skipPdfAuto.add(tabId);
+  await chrome.tabs.update(tabId, { url: pdfUrl });
+}
+
+async function routePdf(tab, mode) {
+  const url = tab?.url || "";
+  if (PDF.isPdfViewerUrl(url, chrome.runtime.id)) {
+    const port = pdfViewerPorts.get(tab.id);
+    if (port) port.postMessage({ cmd: mode === "toggle" ? "toggle" : "translate" });
+    return true;
+  }
+  if (!PDF.isPdfUrl(url)) return false;
+  await openPdfViewer(tab.id, url);
+  return true;
+}
 
 /** Inject only when needed (not every page by default). */
 async function ensureTabScript(tabId, tabUrl) {
@@ -241,9 +299,31 @@ async function ensureTabScript(tabId, tabUrl) {
   markTabNeedsRefresh(tabId, false);
 }
 
-/** Auto-inject only for auto-translate / YouTube auto-subs. */
+/** Auto-inject only for auto-translate / YouTube auto-subs. PDF opens the bilingual reader. */
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   if (info.status !== "complete" || !tab?.url) return;
+  if (PDF.isPdfUrl(tab.url)) {
+    getSettings().then(async (s) => {
+      if (!s.autoTranslate || skipPdfAuto.has(tabId)) {
+        skipPdfAuto.delete(tabId);
+        return;
+      }
+      let host = "";
+      try {
+        host = new URL(tab.url).hostname || "";
+      } catch {
+        host = "";
+      }
+      const blocked = Array.isArray(s.blockedHosts) ? s.blockedHosts : [];
+      if (host && blocked.includes(host)) return;
+      try {
+        await openPdfViewer(tabId, tab.url);
+      } catch {
+        /* file access and blocked hosts are handled in the viewer or popup */
+      }
+    });
+    return;
+  }
   if (!/^https?:/i.test(tab.url)) return;
   getSettings().then(async (s) => {
     const host = (() => {
@@ -319,6 +399,29 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .then((text) => sendResponse({ ok: true, text }))
       .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
     return true;
+  }
+  if (message.type === "OPEN_PDF_VIEWER") {
+    openPdfViewer(message.tabId, message.url)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, blocked: err?.code === "BLOCKED", error: String(err?.message || err) }));
+    return true;
+  }
+  if (message.type === "PDF_RESTORE") {
+    const tabId = message.tabId || _sender?.tab?.id;
+    restorePdfTab(tabId, message.url)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
+    return true;
+  }
+  if (message.type === "PDF_VIEWER_CMD") {
+    const port = pdfViewerPorts.get(message.tabId);
+    if (!port) {
+      sendResponse({ ok: false, error: "PDF viewer is not ready" });
+      return false;
+    }
+    port.postMessage({ cmd: message.cmd || "translate" });
+    sendResponse({ ok: true });
+    return false;
   }
   if (message.type === "ENSURE_SCRIPTS") {
     const tabId = _sender?.tab?.id;

@@ -34,6 +34,7 @@ function loadBackground(fetchImpl) {
     },
     runtime: {
       onInstalled: noopEvent,
+      onConnect: noopEvent,
       onMessage: { addListener(listener) { runtimeListener = listener; } },
       getContexts: async () => [],
       getURL: (value) => value,
@@ -115,6 +116,12 @@ function loadBackground(fetchImpl) {
         }
       : defaultFetch
   });
+  context.importScripts = (...files) => {
+    for (const file of files) {
+      const code = fs.readFileSync(path.resolve(__dirname, "..", file), "utf8");
+      vm.runInContext(code, context, { filename: file });
+    }
+  };
   const source = fs.readFileSync(path.resolve(__dirname, "../background.js"), "utf8");
   vm.runInContext(source, context, { filename: "background.js" });
   return { context, getFetchCount: () => fetchCount, getRuntimeListener: () => runtimeListener };

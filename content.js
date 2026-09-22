@@ -32,6 +32,11 @@
   ]);
 
   const PAGE = window.__LT_PAGE_CORE__ || {};
+  const ICON_CLOSEST =
+    PAGE.ICON_CLOSEST ||
+    "md-icon, mat-icon, iron-icon, .material-icons, .material-symbols-outlined, .material-symbols-rounded, .material-symbols-sharp, .google-symbols, .ms-Icon";
+  const MENU_CLOSEST =
+    "[role='menu'], [role='listbox'], [role='menubar'], [role='tree'], md-menu, md-list, mat-menu, mat-nav-list";
 
   // Inline tags (do not break onto their own line)
   const INLINE_TAGS = new Set([
@@ -623,12 +628,16 @@
           if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
           const parent = node.parentElement;
           if (!parent) return NodeFilter.FILTER_REJECT;
-          if (parent.closest(".bt-translated-block, #bt-selection-toast, #lt-yt-overlay")) {
+          if (parent.closest(".bt-translated-block, .bt-failed-block, .bt-pair, #bt-selection-toast, #lt-yt-overlay")) {
             return NodeFilter.FILTER_REJECT;
           }
           if (parent.closest(".ytp-caption-window-container, .html5-video-player")) {
             return NodeFilter.FILTER_REJECT;
           }
+          if (isIconElement(parent) || parent.closest?.(ICON_CLOSEST)) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          if (isNoTranslate(parent)) return NodeFilter.FILTER_REJECT;
           if (isSkipped(parent, skipCode)) return NodeFilter.FILTER_REJECT;
           return NodeFilter.FILTER_ACCEPT;
         }
@@ -640,9 +649,10 @@
         const parent = node.parentElement;
         const piece = node.nodeValue.replace(/\s+/g, " ").trim();
         if (!piece) continue;
+        if (PAGE.isIconGlyphText?.(piece, iconNodeInfo(parent))) continue;
         if (parent.closest("select") && parent.tagName !== "OPTION") continue;
         const host = parent.tagName === "OPTION" ? parent : findBestHost(parent);
-        if (!host) continue;
+        if (!host || isIconElement(host)) continue;
         if (host.tagName === "SELECT") continue;
         if (host.getAttribute(DONE) || host.getAttribute("data-lt-pending")) continue;
         if (host.querySelector?.(".bt-translated-block, .bt-failed-block, [data-lt-done], [data-lt-pending]")) continue;
@@ -653,7 +663,8 @@
       }
 
       for (const [el, parts] of hostMap.entries()) {
-        const text = parts.join(" ").replace(/\s+/g, " ").trim();
+        const text = PAGE.joinHostPieces ? PAGE.joinHostPieces(parts) : parts.join(" ").replace(/\s+/g, " ").trim();
+        if (!text) continue;
         const pri = uiPriority(el, text);
         pushTextUnit(el, text, el.tagName === "OPTION" ? "option" : "text", pri);
       }
@@ -662,10 +673,10 @@
         const attrNodes =
           walkRootEl.querySelectorAll?.("[title], [aria-label], [placeholder], [alt]") || [];
         attrNodes.forEach((el) => {
-          if (isSkipped(el, skipCode)) return;
+          if (isSkipped(el, skipCode) || isIconElement(el) || isNoTranslate(el)) return;
           for (const attr of ["title", "aria-label", "placeholder", "alt"]) {
             const val = (el.getAttribute(attr) || "").replace(/\s+/g, " ").trim();
-            if (!val || !shouldTranslateText(val)) continue;
+            if (!val || PAGE.isIconLigatureName?.(val) || !shouldTranslateText(val)) continue;
             if (el.getAttribute(`data-lt-attr-${attr}`)) continue;
             if (viewportOnly && !isInViewport(el)) continue;
             const key = `a:${getPathKey(el)}:${attr}:${val}`;
@@ -688,7 +699,7 @@
         const chromeSel =
           "th, [role='columnheader'], [role='heading'], h1, h2, h3, h4, legend, button, [role='button'], label, summary";
         walkRootEl.querySelectorAll?.(chromeSel)?.forEach((el) => {
-          if (isSkipped(el, skipCode)) return;
+          if (isSkipped(el, skipCode) || isIconElement(el) || isNoTranslate(el)) return;
           if (hasTranslatableElementChild(el)) return;
           const text = getDirectText(el);
           if (!text || text.length > 80) return;
@@ -783,6 +794,17 @@
     clone
       .querySelectorAll(".bt-translated-block, .bt-failed-block, .bt-original-hidden")
       .forEach((n) => n.remove());
+    clone.querySelectorAll(".bt-pair").forEach((pair) => {
+      const parent = pair.parentNode;
+      if (!parent) return;
+      while (pair.firstChild) parent.insertBefore(pair.firstChild, pair);
+      pair.remove();
+    });
+    try {
+      clone.querySelectorAll(ICON_CLOSEST).forEach((n) => n.remove());
+    } catch {
+      /* selector may not match in some documents */
+    }
     return (clone.textContent || "").replace(/\s+/g, " ").trim();
   }
 
@@ -845,22 +867,23 @@
 
   function findBestHost(el) {
     if (!el || el === document.body || el === document.documentElement) return null;
+    if (isIconElement(el)) return null;
 
     const block = enclosingBlock(el);
-    if (block && block !== el) {
-      const blockText = (block.textContent || "").replace(/\s+/g, " ").trim();
-      const elText = (el.textContent || "").replace(/\s+/g, " ").trim();
+    if (block && block !== el && !isIconElement(block)) {
+      const blockText = getElementOriginalText(block);
+      const elText = getElementOriginalText(el);
       const prefer =
         PAGE.shouldHostAtAncestor
           ? PAGE.shouldHostAtAncestor(blockText, elText)
           : blockText.length > elText.length + 8;
-      if (prefer) return block;
+      if (prefer) return preferTextHost(block);
     }
 
-    if (isInlinePiece(el) && block) return block;
+    if (isInlinePiece(el) && block && !isIconElement(block)) return preferTextHost(block);
 
     if (isLeafHost(el) && !isInlinePiece(el)) {
-      return el;
+      return preferTextHost(el);
     }
 
     let cur = el;
@@ -869,29 +892,34 @@
     let bestBlock = null;
 
     while (cur && cur !== document.body && depth < 10) {
+      if (isIconElement(cur)) {
+        cur = cur.parentElement;
+        depth += 1;
+        continue;
+      }
       const tag = cur.tagName;
 
       if (SEMANTIC_BLOCK_TAGS.has(tag) || /^H[1-6]$/.test(tag)) {
-        const t = (cur.textContent || "").replace(/\s+/g, " ").trim();
-        if (t.length > 0 && t.length <= 2000) return cur;
+        const t = getElementOriginalText(cur);
+        if (t.length > 0 && t.length <= 2000) return preferTextHost(cur);
       }
 
       if (tag === "BUTTON" || tag === "A" || tag === "LABEL") {
-        const t = (cur.textContent || "").replace(/\s+/g, " ").trim();
+        const t = getElementOriginalText(cur);
         const outer = enclosingBlock(cur);
-        if (outer && outer !== cur) {
-          const ot = (outer.textContent || "").replace(/\s+/g, " ").trim();
+        if (outer && outer !== cur && !isIconElement(outer)) {
+          const ot = getElementOriginalText(outer);
           if (PAGE.shouldHostAtAncestor ? PAGE.shouldHostAtAncestor(ot, t) : ot.length > t.length + 8) {
             cur = cur.parentElement;
             depth += 1;
             continue;
           }
         }
-        if (t.length > 0 && t.length <= 300) return cur;
+        if (t.length > 0 && t.length <= 300) return preferTextHost(cur);
       }
 
       if (["SPAN", "DIV", "SMALL", "STRONG", "EM", "B", "I"].includes(tag)) {
-        const t = (cur.textContent || "").replace(/\s+/g, " ").trim();
+        const t = getElementOriginalText(cur);
         if (t.length > 0 && t.length <= 80 && cur.children.length <= 2) {
           if (!bestSmall) bestSmall = cur;
         }
@@ -904,7 +932,7 @@
       depth += 1;
     }
 
-    return bestSmall || bestBlock || block || el;
+    return preferTextHost(bestSmall || bestBlock || block || el);
   }
 
   // Whether element is a leaf host (text or inline children only)
@@ -940,6 +968,7 @@
   function shouldTranslateText(text) {
     if (!text) return false;
     if (text.length < 1 || text.length > 5000) return false;
+    if (PAGE.isIconLigatureName?.(text.trim())) return false;
 
     // Common billing/settings short UI — force translate
     if (UI_LABEL_RE.test(text.trim())) return true;
@@ -1019,9 +1048,11 @@
   // ─── Skip detection (reduce false exclusions) ───
 
   function isSkipped(el, skipCode) {
+    if (isNoTranslate(el)) return true;
     let cur = el;
     while (cur && cur !== document.documentElement) {
       if (SKIP_TAGS.has(cur.tagName)) return true;
+      if (isIconElement(cur)) return true;
       // Skip chrome/nav chrome — focus on main content (fewer false positives on site shells).
       if (
         cur.tagName === "NAV" ||
@@ -1066,8 +1097,7 @@
 
   // ─── Inject translation ───
 
-  // Compact = short chrome (button/chip/label). Email copy stacks as block pairs.
-  const COMPACT_HOST_CLASS_RE = /\b(Label|Badge|Counter|State|Tag|Pill|chip|tooltipped)\b/i;
+  // Compact = tiny inline chips only. Menus, headings, and icon rows always stack.
 
   function hostTextLength(el) {
     const text = getElementOriginalText(el) || String(el?.textContent || "").replace(/\s+/g, " ").trim();
@@ -1097,54 +1127,196 @@
 
   function markHost(el, compact) {
     el.classList.add("bt-host");
-    el.classList.remove("bt-host-compact", "bt-host-dark", "bt-host-light");
+    el.classList.remove("bt-host-compact", "bt-host-stack", "bt-host-dark", "bt-host-light", "bt-host-row");
     if (compact) el.classList.add("bt-host-compact");
+    else el.classList.add("bt-host-stack");
     const tone = hostToneClass(el);
     if (tone) el.classList.add(tone);
-  }
-
-  function clearHostMarks(el) {
-    el?.classList?.remove("bt-host", "bt-host-compact", "bt-host-dark", "bt-host-light");
-  }
-
-  function isCompactHost(el) {
-    if (!el) return false;
-    const tag = el.tagName;
-    if (SEMANTIC_BLOCK_TAGS.has(tag) || /^H[1-6]$/.test(tag)) return false;
-    const len = hostTextLength(el);
-    if (len > 36) return false;
     try {
-      const st = getComputedStyle(el);
-      const fontPx = parseFloat(st.fontSize) || 0;
-      const bodyPx = parseFloat(getComputedStyle(document.body).fontSize) || 16;
-      if (fontPx >= bodyPx * 1.12) return false;
-      if (st.display === "block" || st.display === "flex" || st.display === "grid" || st.display === "table-cell") {
-        return (tag === "A" || tag === "BUTTON") && len <= 28;
+      const display = getComputedStyle(el).display;
+      if (!compact && !hostNeedsPairWrap(el) && (display === "flex" || display === "inline-flex")) {
+        const dir = getComputedStyle(el).flexDirection || "row";
+        if (!dir.startsWith("column")) el.classList.add("bt-host-row");
       }
     } catch {
       /* computed style unavailable */
     }
-    if (tag === "BUTTON" || tag === "LABEL") return true;
-    if (tag === "A") return len <= 28;
-    if (typeof el.className === "string" && COMPACT_HOST_CLASS_RE.test(el.className)) return true;
+  }
+
+  function clearHostMarks(el) {
+    el?.classList?.remove(
+      "bt-host",
+      "bt-host-compact",
+      "bt-host-stack",
+      "bt-host-row",
+      "bt-host-dark",
+      "bt-host-light"
+    );
+  }
+
+  function iconNodeInfo(el) {
+    if (!el) return {};
+    let fontFamily = "";
+    let fontVariationSettings = "";
+    let infoFontPx = 0;
     try {
-      const disp = getComputedStyle(el).display;
-      if ((disp === "inline" || disp === "inline-flex") && len <= 22) return true;
+      const st = getComputedStyle(el);
+      fontFamily = st.fontFamily || "";
+      fontVariationSettings = st.fontVariationSettings || "";
+      infoFontPx = parseFloat(st.fontSize) || 0;
     } catch {
-      /* ignore */
+      /* detached */
     }
+    return {
+      tag: el.tagName,
+      className: el.className,
+      fontFamily,
+      fontVariationSettings,
+      fontPx: infoFontPx,
+      text: getDirectText(el),
+      ariaHidden: el.getAttribute?.("aria-hidden") === "true"
+    };
+  }
+
+  function isIconElement(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (PAGE.isIconTag?.(el.tagName) || PAGE.isIconClassName?.(el.className)) return true;
+    try {
+      if (el.matches?.(ICON_CLOSEST)) return true;
+    } catch {
+      /* invalid selector */
+    }
+    return !!PAGE.shouldSkipIconNode?.(iconNodeInfo(el));
+  }
+
+  function isNoTranslate(el) {
+    let cur = el;
+    while (cur && cur !== document.documentElement && cur !== document.body) {
+      if (cur.getAttribute?.("translate") === "no") return true;
+      const cls = typeof cur.className === "string" ? cur.className : "";
+      if (/\bnotranslate\b/.test(cls)) return true;
+      cur = cur.parentElement;
+    }
+    return false;
+  }
+
+  function preferTextHost(el, depth = 0) {
+    if (!el || depth > 4) return el;
+    const kids = [...(el.children || [])].filter(
+      (c) =>
+        !c.classList?.contains("bt-translated-block") &&
+        !c.classList?.contains("bt-failed-block") &&
+        !c.classList?.contains("bt-pair")
+    );
+    const icons = kids.filter(
+      (c) =>
+        isIconElement(c) ||
+        c.getAttribute("slot") === "start" ||
+        c.getAttribute("slot") === "icon" ||
+        c.getAttribute("slot") === "leading-icon"
+    );
+    const others = kids.filter((c) => !icons.includes(c) && !SKIP_TAGS.has(c.tagName));
+    if (icons.length && others.length === 1) {
+      const label = others[0];
+      const t = getElementOriginalText(label);
+      if (t && t.length <= 400 && !PAGE.isIconLigatureName?.(t)) {
+        return preferTextHost(label, depth + 1);
+      }
+    }
+    return el;
+  }
+
+  function hostNeedsPairWrap(el) {
+    const kids = [...(el.children || [])];
+    return kids.some(
+      (c) =>
+        isIconElement(c) ||
+        c.getAttribute("slot") === "start" ||
+        c.getAttribute("slot") === "icon" ||
+        c.getAttribute("slot") === "leading-icon"
+    );
+  }
+
+  function wrapNakedTextIntoPair(host, translationNode) {
+    const pair = document.createElement("span");
+    pair.className = "bt-pair";
+    const move = [];
+    for (const child of [...host.childNodes]) {
+      if (child === translationNode) continue;
+      if (child.nodeType === Node.TEXT_NODE) {
+        if (child.nodeValue && child.nodeValue.trim()) move.push(child);
+        continue;
+      }
+      if (child.nodeType !== Node.ELEMENT_NODE) continue;
+      if (isIconElement(child) || SKIP_TAGS.has(child.tagName)) continue;
+      if (child.hasAttribute("slot")) continue;
+      if (child.classList?.contains("bt-translated-block")) continue;
+      move.push(child);
+    }
+    if (!move.length) {
+      host.appendChild(translationNode);
+      return;
+    }
+    host.insertBefore(pair, move[0]);
+    move.forEach((node) => pair.appendChild(node));
+    pair.appendChild(translationNode);
+  }
+
+  function unwrapPairs(root) {
+    (root || document).querySelectorAll?.(".bt-pair").forEach((pair) => {
+      const parent = pair.parentNode;
+      if (!parent) return;
+      while (pair.firstChild) parent.insertBefore(pair.firstChild, pair);
+      pair.remove();
+    });
+  }
+
+  function hostLayoutInfo(el) {
+    let display = "";
+    let fontPx = 0;
+    let bodyPx = 16;
+    try {
+      const st = getComputedStyle(el);
+      display = st.display || "";
+      fontPx = parseFloat(st.fontSize) || 0;
+      bodyPx = parseFloat(getComputedStyle(document.body).fontSize) || 16;
+    } catch {
+      /* computed style unavailable */
+    }
+    const kids = [...(el.children || [])];
+    return {
+      tag: el.tagName,
+      role: el.getAttribute?.("role") || "",
+      display,
+      textLength: hostTextLength(el),
+      hasIconChild: hostNeedsPairWrap(el),
+      inMenu: !!el.closest?.(MENU_CLOSEST),
+      isHeading: /^H[1-6]$/.test(el.tagName) || el.getAttribute?.("role") === "heading",
+      fontPx,
+      bodyPx
+    };
+  }
+
+  function isCompactHost(el) {
+    if (!el) return false;
+    if (PAGE.chooseBilingualLayout) return PAGE.chooseBilingualLayout(hostLayoutInfo(el)) === "compact";
+    const tag = el.tagName;
+    if (SEMANTIC_BLOCK_TAGS.has(tag) || /^H[1-6]$/.test(tag)) return false;
     return false;
   }
 
   function injectAfter(el, translatedText, originalText) {
     if (!el || !translatedText) return false;
-    if (el.querySelector(".bt-translated-block, .bt-failed-block")) return false;
+    const host = preferTextHost(el) || el;
+    if (!host || isIconElement(host)) return false;
+    if (host.querySelector(".bt-translated-block, .bt-failed-block")) return false;
 
-    el.setAttribute(DONE, "1");
-    const compact = isCompactHost(el);
-    markHost(el, compact);
+    host.setAttribute(DONE, "1");
+    const compact = isCompactHost(host);
+    markHost(host, compact);
+    if (host !== el && el.setAttribute) el.setAttribute(DONE, "1");
 
-    if (settings?.displayMode === "translation-only") wrapOriginal(el);
+    if (settings?.displayMode === "translation-only") wrapOriginal(host);
 
     const node = document.createElement("span");
     node.className = "bt-translated-block";
@@ -1153,7 +1325,8 @@
     if (compact) node.classList.add("bt-small");
     node.textContent = translatedText;
 
-    el.appendChild(node);
+    if (hostNeedsPairWrap(host)) wrapNakedTextIntoPair(host, node);
+    else host.appendChild(node);
     return true;
   }
 
@@ -1226,6 +1399,9 @@
       acceptNode(node) {
         if (!node.nodeValue?.trim()) return NodeFilter.FILTER_REJECT;
         if (node.parentElement?.closest(".bt-translated-block")) return NodeFilter.FILTER_REJECT;
+        if (isIconElement(node.parentElement) || node.parentElement?.closest?.(ICON_CLOSEST)) {
+          return NodeFilter.FILTER_REJECT;
+        }
         return NodeFilter.FILTER_ACCEPT;
       }
     });
@@ -1244,6 +1420,7 @@
 
   function restorePage() {
     document.querySelectorAll(".bt-translated-block, .bt-failed-block").forEach((n) => n.remove());
+    unwrapPairs(document);
     document.querySelectorAll(`[${DONE}], [data-lt-pending]`).forEach((el) => {
       el.removeAttribute(DONE);
       el.removeAttribute("data-lt-pending");
