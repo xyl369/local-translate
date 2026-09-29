@@ -1047,27 +1047,92 @@
 
   // ─── Skip detection (reduce false exclusions) ───
 
+  const headerFactsCache = new WeakMap();
+
+  function isHeaderLandmark(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const role = (el.getAttribute?.("role") || "").toLowerCase();
+    return el.tagName === "HEADER" || role === "banner";
+  }
+
+  function headerFacts(header) {
+    const cached = headerFactsCache.get(header);
+    if (cached) return cached;
+    const role = (header.getAttribute?.("role") || "").toLowerCase();
+    let contentLinkCount = 0;
+    try {
+      header.querySelectorAll("a[href]").forEach((a) => {
+        if (!a.closest("h1, h2, h3, h4, h5, h6, [role='heading']")) contentLinkCount += 1;
+      });
+    } catch {
+      /* ignore */
+    }
+    const facts = {
+      hasNav: !!header.querySelector?.("nav, [role='navigation']"),
+      hasHeading:
+        /^H[1-6]$/.test(header.tagName) ||
+        role === "heading" ||
+        !!header.querySelector?.("h1, h2, h3, h4, h5, h6, [role='heading']"),
+      inContent: !!header.closest?.("main, article, [role='main']"),
+      contentLinkCount
+    };
+    headerFactsCache.set(header, facts);
+    return facts;
+  }
+
+  function headingContext(origin, header) {
+    let cur = origin;
+    while (cur && cur.nodeType === 1) {
+      if (/^H[1-6]$/.test(cur.tagName) || cur.getAttribute?.("role") === "heading") {
+        return {
+          originIsHeading: true,
+          originHeadingText: (cur.textContent || "").replace(/\s+/g, " ").trim()
+        };
+      }
+      if (cur === header) break;
+      cur = cur.parentElement;
+    }
+    return { originIsHeading: false, originHeadingText: "" };
+  }
+
+  function landmarkInfo(cur, origin) {
+    const role = cur.getAttribute?.("role") || "";
+    const info = { tag: cur.tagName || "", role };
+    if (!isHeaderLandmark(cur)) return info;
+    return {
+      ...info,
+      ...headerFacts(cur),
+      ...headingContext(origin, cur),
+      originInNav: !!origin?.closest?.("nav, [role='navigation']")
+    };
+  }
+
+  function shouldSkipChromeAncestor(cur, origin) {
+    if (!cur || cur.nodeType !== 1) return false;
+    if (PAGE.shouldSkipLandmark) return PAGE.shouldSkipLandmark(landmarkInfo(cur, origin));
+    const role = (cur.getAttribute?.("role") || "").toLowerCase();
+    return (
+      cur.tagName === "NAV" ||
+      cur.tagName === "HEADER" ||
+      cur.tagName === "FOOTER" ||
+      cur.tagName === "ASIDE" ||
+      role === "navigation" ||
+      role === "banner" ||
+      role === "contentinfo" ||
+      role === "toolbar" ||
+      role === "menubar" ||
+      role === "complementary"
+    );
+  }
+
   function isSkipped(el, skipCode) {
     if (isNoTranslate(el)) return true;
     let cur = el;
     while (cur && cur !== document.documentElement) {
       if (SKIP_TAGS.has(cur.tagName)) return true;
       if (isIconElement(cur)) return true;
-      // Skip chrome/nav chrome — focus on main content (fewer false positives on site shells).
-      if (
-        cur.tagName === "NAV" ||
-        cur.tagName === "HEADER" ||
-        cur.tagName === "FOOTER" ||
-        cur.tagName === "ASIDE" ||
-        cur.getAttribute?.("role") === "navigation" ||
-        cur.getAttribute?.("role") === "banner" ||
-        cur.getAttribute?.("role") === "contentinfo" ||
-        cur.getAttribute?.("role") === "toolbar" ||
-        cur.getAttribute?.("role") === "menubar" ||
-        cur.getAttribute?.("role") === "complementary"
-      ) {
-        return true;
-      }
+      // Skip site chrome. A <header> inside main/article is the title block, not the navbar.
+      if (shouldSkipChromeAncestor(cur, el)) return true;
       if (isSiteChrome(cur)) return true;
       if (skipCode && cur.tagName === "PRE") return true;
       if (

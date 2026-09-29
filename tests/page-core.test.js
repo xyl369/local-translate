@@ -67,6 +67,88 @@ test("material icon ligatures are not treated as labels", () => {
   assert.equal(core.primaryFontIsIcon("Google Symbols, sans-serif"), true);
 });
 
+test("article title blocks are translated and site headers stay skipped", () => {
+  const essayTitle = "On the Value of Doing a PhD in the Age of AI";
+  assert.equal(core.looksLikeProseTitle(essayTitle), true);
+  assert.equal(core.looksLikeProseTitle("Acme"), false);
+  assert.equal(core.looksLikeProseTitle("For PhD Students in AI"), true);
+
+  const titleBlock = {
+    tag: "HEADER",
+    role: "",
+    hasHeading: true,
+    hasNav: false,
+    inContent: true,
+    contentLinkCount: 0,
+    originInNav: false
+  };
+  assert.equal(core.shouldSkipLandmark({ ...titleBlock, originIsHeading: false }), false);
+  assert.equal(
+    core.shouldSkipLandmark({
+      ...titleBlock,
+      originIsHeading: true,
+      originHeadingText: essayTitle
+    }),
+    false
+  );
+
+  assert.equal(
+    core.shouldSkipLandmark({
+      tag: "HEADER",
+      hasHeading: true,
+      hasNav: true,
+      inContent: false,
+      contentLinkCount: 4,
+      originInNav: false,
+      originIsHeading: true,
+      originHeadingText: "Acme"
+    }),
+    true
+  );
+  assert.equal(
+    core.shouldSkipLandmark({
+      tag: "HEADER",
+      role: "banner",
+      hasHeading: true,
+      hasNav: false,
+      inContent: true,
+      contentLinkCount: 0,
+      originInNav: false,
+      originIsHeading: false
+    }),
+    true
+  );
+  assert.equal(
+    core.shouldSkipLandmark({
+      tag: "HEADER",
+      hasNav: true,
+      inContent: true,
+      hasHeading: true,
+      contentLinkCount: 3,
+      originInNav: true,
+      originIsHeading: false
+    }),
+    true
+  );
+  assert.equal(
+    core.shouldSkipLandmark({
+      tag: "HEADER",
+      hasNav: true,
+      inContent: true,
+      hasHeading: true,
+      contentLinkCount: 3,
+      originInNav: false,
+      originIsHeading: true,
+      originHeadingText: essayTitle
+    }),
+    false
+  );
+  assert.equal(core.shouldSkipLandmark({ tag: "NAV" }), true);
+  assert.equal(core.shouldSkipLandmark({ tag: "FOOTER" }), true);
+  assert.equal(core.shouldSkipLandmark({ tag: "ASIDE" }), true);
+  assert.equal(core.shouldSkipLandmark({ tag: "DIV", role: "toolbar" }), true);
+});
+
 test("bilingual layout stacks menus and headings, compact only for tiny chips", () => {
   assert.equal(
     core.chooseBilingualLayout({

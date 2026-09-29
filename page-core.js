@@ -149,6 +149,38 @@
     return isIconGlyphText(info.text, info);
   }
 
+  /** Multi-word heading, not a one-token logo like "Acme". */
+  function looksLikeProseTitle(text) {
+    const t = String(text || "").replace(/\s+/g, " ").trim();
+    return t.length >= 12 && t.length <= 300 && /\s/.test(t);
+  }
+
+  /**
+   * <header> is both site chrome and the article title block (kicker, h1/h2, byline).
+   * Skip navigation chrome. Keep a title block that sits in main/article and has a heading
+   * but no menu. A real multi-word heading is still translated when it shares a header with a nav.
+   */
+  function shouldSkipHeader(info = {}) {
+    if (info.originInNav) return true;
+    if (info.originIsHeading && looksLikeProseTitle(info.originHeadingText)) return false;
+    const role = String(info.role || "").toLowerCase();
+    if (role === "banner") return true;
+    if (info.hasNav) return true;
+    const links = Number(info.contentLinkCount) || 0;
+    if (info.inContent && info.hasHeading && links < 2) return false;
+    return true;
+  }
+
+  function shouldSkipLandmark(info = {}) {
+    const tag = String(info.tag || "").toUpperCase();
+    const role = String(info.role || "").toLowerCase();
+    if (tag === "NAV" || role === "navigation" || role === "menubar" || role === "toolbar") return true;
+    if (tag === "FOOTER" || role === "contentinfo") return true;
+    if (tag === "ASIDE" || role === "complementary") return true;
+    if (tag === "HEADER" || role === "banner") return shouldSkipHeader(info);
+    return false;
+  }
+
   function joinHostPieces(parts) {
     return (Array.isArray(parts) ? parts : [])
       .map((part) => String(part || "").replace(/\s+/g, " ").trim())
@@ -235,6 +267,9 @@
     isMaterialSymbolsAxes,
     isIconGlyphText,
     shouldSkipIconNode,
+    looksLikeProseTitle,
+    shouldSkipHeader,
+    shouldSkipLandmark,
     joinHostPieces,
     isMenuLikeHost,
     chooseBilingualLayout,
