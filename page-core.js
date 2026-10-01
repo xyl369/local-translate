@@ -139,7 +139,11 @@
       isIconClassName(info.className) ||
       primaryFontIsIcon(info.fontFamily) ||
       (isMaterialSymbolsAxes(info.fontVariationSettings) && (!fontPx || fontPx <= 32));
-    if (inIcon) return /^[a-z][a-z0-9_]{1,47}$/i.test(t);
+    // "Hi" / "OK" are words. Icon names here are ligatures or longer glyphs.
+    if (inIcon) {
+      if (t.length < 3 && !/_/.test(t)) return false;
+      return /^[a-z][a-z0-9_]{1,47}$/i.test(t);
+    }
     return isIconLigatureName(t);
   }
 
@@ -182,12 +186,31 @@
   }
 
   function joinHostPieces(parts) {
-    return (Array.isArray(parts) ? parts : [])
+    const cleaned = (Array.isArray(parts) ? parts : [])
       .map((part) => String(part || "").replace(/\s+/g, " ").trim())
-      .filter((part) => part && !isIconLigatureName(part))
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
+      .filter((part) => part && !isIconLigatureName(part));
+    let out = "";
+    for (const part of cleaned) {
+      if (!out) {
+        out = part;
+        continue;
+      }
+      // Keep "panel." intact when the link and the period are separate text nodes.
+      if (/^[,.;:!?%)\]，。！？；：、]/.test(part)) out += part;
+      else out += ` ${part}`;
+    }
+    return out.replace(/\s+/g, " ").trim();
+  }
+
+  /**
+   * Climb while the parent is only a wrapper around this sentence.
+   * Stop when the parent has other block paragraphs, so a link is not
+   * translated alone and sibling paragraphs are not dropped with it.
+   */
+  function shouldClimbToParent(structuralChildCount, currentIsSoleStructuralChild) {
+    const count = Number(structuralChildCount) || 0;
+    if (count <= 0) return true;
+    return count === 1 && !!currentIsSoleStructuralChild;
   }
 
   function isMenuLikeHost(info = {}) {
@@ -271,6 +294,7 @@
     shouldSkipHeader,
     shouldSkipLandmark,
     joinHostPieces,
+    shouldClimbToParent,
     isMenuLikeHost,
     chooseBilingualLayout,
     protectStableTokens,

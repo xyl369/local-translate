@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.11.2] — 2026-10-01
+
+- HTML mail was splitting a sentence at its link, so only “log into your client panel” was translated and the paragraphs around it were dropped
+- Keep the link inside the sentence, and translate each sibling paragraph on its own
+- Do not treat “Hi” as an icon glyph, and do not let a `font-size: 0` mail wrapper hide the translation
+
 ## [3.11.1] — 2026-09-22
 
 - PDF translation no longer waits for a whole page before showing anything. Paragraphs return in small batches into a sticky column beside the page, and the page on screen is translated before later pages.

@@ -193,5 +193,5 @@ test("pdf routing is wired through the service worker and the popup", () => {
   const viewer = fs.readFileSync(path.join(root, "pdf-viewer.js"), "utf8");
   assert.match(viewer, /TRANSLATE_BATCH/);
   assert.match(viewer, /glyphsFromPdfItems/);
-  assert.match(manifest, /"version": "3\.11\.1"/);
+  assert.match(manifest, /"version": "3\.11\.2"/);
 });

@@ -41,6 +41,20 @@ test("material icon ligatures are not treated as labels", () => {
   assert.equal(core.joinHostPieces(["arrow_circle_up", "Submit prompt key"]), "Submit prompt key");
   assert.equal(core.joinHostPieces(["Privacy policy", "shield_person"]), "Privacy policy");
   assert.equal(
+    core.joinHostPieces([
+      "To view your billing statement, please",
+      "log into your client panel",
+      "."
+    ]),
+    "To view your billing statement, please log into your client panel."
+  );
+  assert.equal(core.joinHostPieces(["Hi", "xiaoyi,"]), "Hi xiaoyi,");
+  assert.equal(core.shouldClimbToParent(0, false), true);
+  assert.equal(core.shouldClimbToParent(1, true), true);
+  assert.equal(core.shouldClimbToParent(3, false), false);
+  assert.equal(core.isIconGlyphText("Hi", { className: "material-icons" }), false);
+  assert.equal(core.isIconGlyphText("close", { className: "material-icons" }), true);
+  assert.equal(
     core.shouldSkipIconNode({ tag: "MD-ICON", text: "arrow_circle_up" }),
     true
   );

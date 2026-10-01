@@ -607,8 +607,16 @@
       if (!el || hostDone.has(el)) return;
       if (el.getAttribute?.(DONE) || el.getAttribute?.("data-lt-pending")) return;
       if (el.closest?.(".bt-translated-block, .bt-failed-block")) return;
-      if (el.querySelector?.(".bt-translated-block, .bt-failed-block, [data-lt-done], [data-lt-pending]")) return;
-      if (kind === "text" && hasTranslatableElementChild(el)) return;
+      if (
+        kind === "text" &&
+        [...(el.children || [])].some(
+          (child) =>
+            child.classList?.contains("bt-translated-block") ||
+            child.classList?.contains("bt-failed-block")
+        )
+      ) {
+        return;
+      }
       if (viewportOnly && !isInViewport(el)) return;
       if (nearViewport && !isNearViewport(el)) return;
       const t = String(text || "").replace(/\s+/g, " ").trim();
@@ -651,11 +659,19 @@
         if (!piece) continue;
         if (PAGE.isIconGlyphText?.(piece, iconNodeInfo(parent))) continue;
         if (parent.closest("select") && parent.tagName !== "OPTION") continue;
-        const host = parent.tagName === "OPTION" ? parent : findBestHost(parent);
+        const host = parent.tagName === "OPTION" ? parent : findSentenceHost(parent);
         if (!host || isIconElement(host)) continue;
         if (host.tagName === "SELECT") continue;
         if (host.getAttribute(DONE) || host.getAttribute("data-lt-pending")) continue;
-        if (host.querySelector?.(".bt-translated-block, .bt-failed-block, [data-lt-done], [data-lt-pending]")) continue;
+        if (
+          [...(host.children || [])].some(
+            (child) =>
+              child.classList?.contains("bt-translated-block") ||
+              child.classList?.contains("bt-failed-block")
+          )
+        ) {
+          continue;
+        }
         if (viewportOnly && !isInViewport(host)) continue;
         if (nearViewport && !isNearViewport(host)) continue;
         if (!hostMap.has(host)) hostMap.set(host, []);
@@ -749,6 +765,7 @@
     if (tag === "BUTTON" || el?.getAttribute?.("role") === "button") p += 8;
     if (tag === "OPTION" || tag === "LABEL" || tag === "LEGEND" || tag === "SUMMARY") p += 30;
     if (t.length > 0 && t.length <= 28) p += 15;
+    if (t.length > 40 && /\s/.test(t)) p += 36;
     if (typeof UI_LABEL_RE !== "undefined" && UI_LABEL_RE.test(t)) p += 50;
     const head = t.split(/\s+/).slice(0, 3).join(" ");
     if (typeof UI_LABEL_RE !== "undefined" && UI_LABEL_RE.test(head)) p += 30;
@@ -863,6 +880,43 @@
     if (!el) return false;
     if (PAGE.isInlinePieceTag) return PAGE.isInlinePieceTag(el.tagName);
     return INLINE_TAGS.has(el.tagName) || el.tagName === "BR";
+  }
+
+  function isStructuralChild(child) {
+    if (!child || child.nodeType !== 1) return false;
+    if (
+      child.classList?.contains("bt-translated-block") ||
+      child.classList?.contains("bt-failed-block") ||
+      child.classList?.contains("bt-pair")
+    ) {
+      return false;
+    }
+    if (isInlinePiece(child) || child.tagName === "BR" || SKIP_TAGS.has(child.tagName)) return false;
+    if (isIconElement(child)) return false;
+    const text = (child.textContent || "").replace(/\s+/g, " ").trim();
+    return !!(text && shouldTranslateText(text));
+  }
+
+  // Keep a link inside its sentence. Do not climb into a parent that has other paragraphs.
+  function findSentenceHost(el) {
+    let cur = el;
+    if (!cur || cur === document.body || cur === document.documentElement) return el;
+    let guard = 0;
+    while (cur.parentElement && guard < 12) {
+      const parent = cur.parentElement;
+      if (!parent || parent === document.body || parent === document.documentElement) break;
+      if (isIconElement(parent)) break;
+      const structural = [...(parent.children || [])].filter((child) => isStructuralChild(child));
+      const sole = structural.length === 1 && structural[0] === cur;
+      const climb = PAGE.shouldClimbToParent
+        ? PAGE.shouldClimbToParent(structural.length, sole)
+        : structural.length === 0 || sole;
+      if (!climb) break;
+      if ((parent.textContent || "").length > 2000) break;
+      cur = parent;
+      guard += 1;
+    }
+    return cur;
   }
 
   function findBestHost(el) {
@@ -1374,7 +1428,14 @@
     if (!el || !translatedText) return false;
     const host = preferTextHost(el) || el;
     if (!host || isIconElement(host)) return false;
-    if (host.querySelector(".bt-translated-block, .bt-failed-block")) return false;
+    const directDup = [...(host.children || [])].some(
+      (child) =>
+        child.classList?.contains("bt-translated-block") ||
+        child.classList?.contains("bt-failed-block")
+    );
+    if (directDup) return false;
+    // A link translated earlier must not block the sentence it belongs to.
+    host.querySelectorAll(".bt-translated-block, .bt-failed-block").forEach((node) => node.remove());
 
     host.setAttribute(DONE, "1");
     const compact = isCompactHost(host);
